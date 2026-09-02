@@ -86,7 +86,7 @@ chmod 000 /mnt 2>/dev/null || true
 sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories 2>/dev/null || true
 echo "nameserver 1.1.1.1" > /etc/resolv.conf
 apk update
-apk add --no-cache curl ca-certificates busybox python3 py3-pip bash jq bind-tools libxml2 libxslt
+apk add --no-cache curl ca-certificates busybox python3 py3-pip bash jq bind-tools libxml2 libxslt openssh-client sshpass
 pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
 '@
 

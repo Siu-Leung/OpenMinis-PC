@@ -108,6 +108,14 @@ impl ToolDispatcher {
                 })
             }
 
+            "open_terminal" => {
+                let init_cmd = arguments.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
+                match self.sandbox.launch_interactive_terminal(init_cmd) {
+                    Ok(_) => json!({ "success": true, "message": "已成功唤起独立交互终端窗口" }),
+                    Err(e) => json!({ "error": e }),
+                }
+            }
+
             "win_open" => {
                 let target = arguments.get("url").or(arguments.get("path")).and_then(|v| v.as_str()).unwrap_or("");
                 #[cfg(target_os = "windows")]

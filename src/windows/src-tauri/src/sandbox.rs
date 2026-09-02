@@ -159,6 +159,38 @@ impl SandboxManager {
         }
     }
 
+    /// 在 Windows 宿主拉起一个真正的全功能交互式终端窗口（支持 SSH 密码输入、Vim、Htop、PTY 按键）
+    pub fn launch_interactive_terminal(&self, init_cmd: Option<String>) -> Result<(), String> {
+        let shell_arg = match init_cmd {
+            Some(cmd) if !cmd.trim().is_empty() => {
+                format!("{}; exec /bin/sh", cmd)
+            }
+            _ => "exec /bin/sh".to_string(),
+        };
+
+        // 优先尝试拉起现代化的 Windows Terminal (wt.exe)
+        let wt_result = std::process::Command::new("wt.exe")
+            .args([
+                "-w", "0",
+                "--title", "OpenMinis Interactive Terminal",
+                "wsl.exe", "-d", &self.distro_name, "-u", "root", "--", "/bin/sh", "-c", &shell_arg
+            ])
+            .spawn();
+
+        if wt_result.is_err() {
+            // 降级使用 Windows 自带 cmd.exe 独立窗口拉起
+            std::process::Command::new("cmd.exe")
+                .args([
+                    "/c", "start", "OpenMinis Interactive Terminal",
+                    "wsl.exe", "-d", &self.distro_name, "-u", "root", "--", "/bin/sh", "-c", &shell_arg
+                ])
+                .spawn()
+                .map_err(|e| format!("无法唤起交互终端: {}", e))?;
+        }
+
+        Ok(())
+    }
+
     /// 在 Windows 文件资源管理器中打开沙箱目录
     pub fn open_in_explorer(&self, subpath: &str) -> Result<(), String> {
         let clean_path = subpath.trim_start_matches("/var/minis/").replace('/', "\\");

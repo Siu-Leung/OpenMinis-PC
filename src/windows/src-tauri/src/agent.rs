@@ -23,12 +23,15 @@ Linux Sandbox Rules & Directories:
   /var/minis/offloads/    — Auto-saved large tool outputs.
   /var/minis/shared/      — Persistent storage.
 - Tools available:
-  - shell_execute: Execute any Linux shell command (python3, curl, apk add, etc.). Commands must not exceed 1000 chars; write to a file first if longer.
+  - shell_execute: Execute non-interactive Linux shell commands (python3, curl, apk add, sshpass, etc.).
+  - open_terminal: Open an interactive terminal window for tasks requiring user stdin (interactive SSH password login, vim, htop). Pass optional command parameter.
   - file_read: Read file contents from sandbox.
   - file_write: Write or overwrite file contents.
   - file_edit: Exact string replacement for targeted edits.
-  - browser_use: Navigate and extract clean web content (get_text / navigate / screenshot).
-- Shell is BusyBox ash (NOT bash): avoid complex bashisms like [[ ]], arrays, or globstar **.
+  - browser_use: Navigate and extract real web content (get_text / navigate / screenshot) rendered via Edge Headless engine.
+- SSH & Remote operations:
+  - For non-interactive scripts: use `sshpass -p <password> ssh -o StrictHostKeyChecking=no ...` or key-based auth `ssh -i <key> ...`.
+  - For interactive logins where user needs to type passwords or view TUI: call `open_terminal` with the ssh command to launch Windows Terminal.
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,6 +339,19 @@ impl AgentEngine {
                             "new_string": { "type": "string" }
                         },
                         "required": ["path", "old_string", "new_string"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_terminal",
+                    "description": "为需要人机交互输入的任务唤起独立终端窗口 (如交互式 SSH 登录、输入密码、运行 top/htop/vi 等)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": { "type": "string", "description": "在终端中预先运行或初始化的命令 (如 ssh root@x.x.x.x)" }
+                        }
                     }
                 }
             },
