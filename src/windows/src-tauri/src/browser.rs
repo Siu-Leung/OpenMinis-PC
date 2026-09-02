@@ -85,12 +85,13 @@ impl BrowserEngine {
                 let clean_script = format!(
                     "python3 -c \"
 import sys, re, base64
-raw = base64.b64decode('{b64}').decode('utf-8', 'ignore')
+raw = base64.b64decode('{}').decode('utf-8', 'ignore')
 cleaned = re.sub(r'<(script|style|svg|noscript).*?</\\1>', '', raw, flags=re.DOTALL | re.IGNORECASE)
 text = re.sub(r'<[^>]+>', ' ', cleaned)
 text = re.sub(r'\\s+', ' ', text).strip()
 print(text[:10000])
-\""
+\"",
+                    b64_html
                 );
 
                 match self.sandbox.execute_shell(&clean_script, 15).await {
