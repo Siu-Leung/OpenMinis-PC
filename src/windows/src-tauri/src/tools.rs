@@ -1,8 +1,8 @@
-//! OpenMinis Windows 工具调用分发器
+//! OpenMinis Windows 工具调用分发器 (加固审计版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use crate::browser::{BrowserActionParams, BrowserEngine};
-use crate::memory::{MemoryCategory, MemoryStore, MemoryEntry};
+use crate::memory::{MemoryCategory, MemoryStore};
 use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -30,6 +30,7 @@ impl ToolDispatcher {
                         "exit_code": res.exit_code,
                         "stdout": res.stdout,
                         "stderr": res.stderr,
+                        "offload_path": res.offload_path,
                     }),
                     Err(err) => json!({
                         "error": err,
@@ -153,11 +154,23 @@ impl ToolDispatcher {
 
             "win_open" => {
                 let target = arguments.get("url").or(arguments.get("path")).and_then(|v| v.as_str()).unwrap_or("");
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = std::process::Command::new("cmd").args(["/c", "start", "", target]).spawn();
+                // 安全审计加固：禁止任何包含管道、重定向、子命令执行的危险字符
+                if target.contains('&') || target.contains('|') || target.contains(';') || target.contains('`') || target.contains('$') || target.contains('\n') {
+                    return json!({ "error": "安全拦截: 目标参数包含非法命令控制字符" });
                 }
-                json!({ "opened": target })
+
+                // 仅放行安全的 http / https 链接，使用 rundll32 直接交由系统外壳打开，杜绝 cmd /c 命令注入
+                if target.starts_with("http://") || target.starts_with("https://") {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = std::process::Command::new("rundll32.exe")
+                            .args(["url.dll,FileProtocolHandler", target])
+                            .spawn();
+                    }
+                    json!({ "opened": target })
+                } else {
+                    json!({ "error": "win_open 仅支持安全打开以 http:// 或 https:// 开头的网络链接" })
+                }
             }
 
             unknown => json!({

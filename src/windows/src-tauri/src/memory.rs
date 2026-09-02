@@ -1,11 +1,10 @@
-//! OpenMinis Windows 持久化记忆系统 (借鉴 Hermes Agent 自我改进记忆循环)
+//! OpenMinis Windows 持久化记忆系统 (跨天动态感知与全库检索加固版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
@@ -13,7 +12,7 @@ pub struct MemoryEntry {
     pub timestamp: String,
     pub category: MemoryCategory,
     pub content: String,
-    pub pinned: bool,
+    pub source_file: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,9 +26,9 @@ pub enum MemoryCategory {
 }
 
 pub struct MemoryStore {
-    daily_path: PathBuf,
+    memory_dir: PathBuf,
     global_path: PathBuf,
-    _lock: Arc<Mutex<()>>,
+    lock: Arc<Mutex<()>>,
 }
 
 impl MemoryStore {
@@ -40,16 +39,23 @@ impl MemoryStore {
         let memory_dir = base.join("memory");
         std::fs::create_dir_all(&memory_dir).ok();
 
-        let today = Local::now().format("%Y-%m-%d").to_string();
         Self {
-            daily_path: memory_dir.join(format!("{}.md", today)),
+            memory_dir,
             global_path: base.join("GLOBAL.md"),
-            _lock: Arc::new(Mutex::new(())),
+            lock: Arc::new(Mutex::new(())),
         }
     }
 
-    /// 写入一条记忆 (借鉴 Hermes 的 agent-curated memory with periodic nudges)
+    /// 动态计算当日记忆日志路径（杜绝跨午夜运行时日期锁死在昨天的 Bug）
+    fn get_daily_path(&self) -> PathBuf {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        self.memory_dir.join(format!("{}.md", today))
+    }
+
+    /// 写入一条记忆
     pub fn write_memory(&self, category: MemoryCategory, content: &str) -> Result<String, String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+
         let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -62,42 +68,63 @@ impl MemoryStore {
         };
 
         let entry = format!(
-            "<!-- {} {} -->\n## {} ({}): {}\n{}\n",
+            "<!-- {} {} -->\n## {} ({}): {}\n{}\n\n",
             timestamp, id, category_str, id, 
-            content.split('\n').take(1).collect::<Vec<_>>().join(""),
+            content.lines().next().unwrap_or(""),
             content
         );
 
-        // 追加到当日日志
-        let mut file_content = std::fs::read_to_string(&self.daily_path).unwrap_or_default();
+        let target_file = self.get_daily_path();
+        let mut file_content = std::fs::read_to_string(&target_file).unwrap_or_default();
         file_content.push_str(&entry);
-        std::fs::write(&self.daily_path, file_content)
+        std::fs::write(&target_file, file_content)
             .map_err(|e| format!("写入记忆失败: {}", e))?;
 
         Ok(id)
     }
 
-    /// 全文检索记忆 (借鉴 Hermes 的 FTS5 cross-session recall)
+    /// 全文检索记忆：深度扫描全部历史日常记忆库与 GLOBAL.md 全局记忆
     pub fn search_memory(&self, query: &str) -> Result<Vec<MemoryEntry>, String> {
-        let content = std::fs::read_to_string(&self.daily_path).unwrap_or_default();
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
         let q = query.to_lowercase();
         let mut results = Vec::new();
 
-        // 简单的全文检索：按段落分割，匹配关键词
-        for block in content.split("\n\n") {
-            if block.to_lowercase().contains(&q) {
-                // 提取时间戳和内容
-                let id = block.lines()
-                    .next()
-                    .and_then(|l| l.split_whitespace().last())
-                    .unwrap_or("").to_string();
-                results.push(MemoryEntry {
-                    id,
-                    timestamp: block.lines().next().unwrap_or("").to_string(),
-                    category: MemoryCategory::Fact,
-                    content: block.to_string(),
-                    pinned: false,
-                });
+        // 1. 扫描 memory/ 目录下所有的历史日期记录
+        if let Ok(entries) = std::fs::read_dir(&self.memory_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        for block in content.split("\n\n") {
+                            let trimmed = block.trim();
+                            if !trimmed.is_empty() && trimmed.to_lowercase().contains(&q) {
+                                results.push(MemoryEntry {
+                                    id: filename.clone(),
+                                    timestamp: filename.replace(".md", ""),
+                                    category: MemoryCategory::Fact,
+                                    content: trimmed.to_string(),
+                                    source_file: filename.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 扫描 GLOBAL.md 全局持久记忆
+        if self.global_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&self.global_path) {
+                if content.to_lowercase().contains(&q) {
+                    results.push(MemoryEntry {
+                        id: "GLOBAL".to_string(),
+                        timestamp: "Global".to_string(),
+                        category: MemoryCategory::UserPreference,
+                        content: content.trim().to_string(),
+                        source_file: "GLOBAL.md".to_string(),
+                    });
+                }
             }
         }
 
@@ -106,18 +133,23 @@ impl MemoryStore {
 
     /// 获取今日全部记忆
     pub fn get_today_memory(&self) -> Result<String, String> {
-        std::fs::read_to_string(&self.daily_path)
-            .map_err(|e| format!("读取记忆失败: {}", e))
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let path = self.get_daily_path();
+        if !path.exists() {
+            return Ok("今日暂无记录".to_string());
+        }
+        std::fs::read_to_string(&path).map_err(|e| format!("读取记忆失败: {}", e))
     }
 
     /// 获取全局记忆 (GLOBAL.md)
     pub fn get_global_memory(&self) -> Result<String, String> {
-        std::fs::read_to_string(&self.global_path)
-            .map_err(|e| format!("读取全局记忆失败: {}", e))
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        std::fs::read_to_string(&self.global_path).map_err(|e| format!("读取全局记忆失败: {}", e))
     }
 
     /// 初始化全局记忆文件
     pub fn ensure_global_exists(&self) -> Result<(), String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
         if !self.global_path.exists() {
             std::fs::write(&self.global_path, "# Global Memory\n\n<!-- 持久化全局偏好与约定 -->\n")
                 .map_err(|e| format!("初始化全局记忆失败: {}", e))?;

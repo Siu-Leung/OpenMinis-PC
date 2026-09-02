@@ -1,11 +1,10 @@
-//! OpenMinis Windows 定时任务调度 (借鉴 Hermes Cron & AionUi 24/7 Automation)
+//! OpenMinis Windows 定时任务调度 (并发安全与防重触发加固版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use chrono::{Local, Datelike, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduledTask {
@@ -30,7 +29,7 @@ pub enum TaskRepeat {
 
 pub struct CronScheduler {
     tasks_path: PathBuf,
-    _lock: Arc<Mutex<()>>,
+    lock: Arc<Mutex<()>>,
 }
 
 impl CronScheduler {
@@ -41,45 +40,58 @@ impl CronScheduler {
         std::fs::create_dir_all(&base).ok();
         Self {
             tasks_path: base.join("scheduled_tasks.json"),
-            _lock: Arc::new(Mutex::new(())),
+            lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub fn add_task(&self, task: ScheduledTask) -> Result<(), String> {
-        let mut tasks = self.load_all()?;
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut tasks = self.load_all_internal()?;
         tasks.push(task);
-        self.write_all(&tasks)
+        self.write_all_internal(&tasks)
     }
 
     pub fn remove_task(&self, id: &str) -> Result<(), String> {
-        let mut tasks = self.load_all()?;
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut tasks = self.load_all_internal()?;
         tasks.retain(|t| t.id != id);
-        self.write_all(&tasks)
+        self.write_all_internal(&tasks)
     }
 
     pub fn toggle_task(&self, id: &str) -> Result<(), String> {
-        let mut tasks = self.load_all()?;
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut tasks = self.load_all_internal()?;
         if let Some(t) = tasks.iter_mut().find(|t| t.id == id) {
             t.enabled = !t.enabled;
         }
-        self.write_all(&tasks)
+        self.write_all_internal(&tasks)
     }
 
     pub fn list_tasks(&self) -> Result<Vec<ScheduledTask>, String> {
-        self.load_all()
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        self.load_all_internal()
     }
 
-    /// 检查当前时间是否有任务需要触发
+    /// 检查当前时间是否有任务需要触发 (防重加固：同一分钟内绝不重复触发)
     pub fn check_due_tasks(&self) -> Result<Vec<ScheduledTask>, String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
         let now = Local::now();
-        let now_str = format!("{:02}:{:02}", now.hour(), now.minute());
+        let now_time_str = format!("{:02}:{:02}", now.hour(), now.minute());
+        let now_minute_prefix = now.format("%Y-%m-%d %H:%M").to_string();
         let weekday = now.weekday();
-        let tasks = self.load_all()?;
+        let tasks = self.load_all_internal()?;
 
         Ok(tasks.into_iter()
             .filter(|t| {
                 if !t.enabled { return false; }
-                if t.time != now_str { return false; }
+                if t.time != now_time_str { return false; }
+
+                // 防同一分钟内轮询重复触发
+                if let Some(ref last) = t.last_run {
+                    if last.starts_with(&now_minute_prefix) {
+                        return false;
+                    }
+                }
 
                 match t.repeat {
                     TaskRepeat::Daily => true,
@@ -100,7 +112,8 @@ impl CronScheduler {
 
     /// 标记任务已执行
     pub fn mark_run(&self, id: &str) -> Result<(), String> {
-        let mut tasks = self.load_all()?;
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut tasks = self.load_all_internal()?;
         let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         if let Some(t) = tasks.iter_mut().find(|t| t.id == id) {
             t.last_run = Some(now);
@@ -108,10 +121,10 @@ impl CronScheduler {
                 t.enabled = false;
             }
         }
-        self.write_all(&tasks)
+        self.write_all_internal(&tasks)
     }
 
-    fn load_all(&self) -> Result<Vec<ScheduledTask>, String> {
+    fn load_all_internal(&self) -> Result<Vec<ScheduledTask>, String> {
         if !self.tasks_path.exists() {
             return Ok(Vec::new());
         }
@@ -120,7 +133,7 @@ impl CronScheduler {
         serde_json::from_str(&content).map_err(|e| format!("解析任务失败: {}", e))
     }
 
-    fn write_all(&self, tasks: &[ScheduledTask]) -> Result<(), String> {
+    fn write_all_internal(&self, tasks: &[ScheduledTask]) -> Result<(), String> {
         let json = serde_json::to_string_pretty(tasks)
             .map_err(|e| format!("序列化任务失败: {}", e))?;
         std::fs::write(&self.tasks_path, json)

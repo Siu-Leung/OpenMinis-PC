@@ -1,11 +1,10 @@
-//! OpenMinis Windows 会话持久化与全文检索 (借鉴 Hermes FTS5 session search)
+//! OpenMinis Windows 会话持久化与全文检索 (完全加固版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -18,7 +17,8 @@ pub struct SessionRecord {
 
 pub struct SessionStore {
     db_path: PathBuf,
-    _lock: Arc<Mutex<()>>,
+    sessions_dir: PathBuf,
+    lock: Arc<Mutex<()>>,
 }
 
 impl SessionStore {
@@ -26,21 +26,33 @@ impl SessionStore {
         let base = directories::ProjectDirs::from("com", "openminis", "OpenMinis")
             .map(|d| d.data_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("data"));
-        std::fs::create_dir_all(&base).ok();
+        let sessions_dir = base.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).ok();
         Self {
             db_path: base.join("sessions.json"),
-            _lock: Arc::new(Mutex::new(())),
+            sessions_dir,
+            lock: Arc::new(Mutex::new(())),
         }
     }
 
-    /// 保存一轮对话到会话存储
-    pub fn save_session(&self, messages: &[super::ChatMessage]) -> Result<String, String> {
-        let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    /// 保存会话：索引存入 sessions.json，完整消息存入 sessions/{id}.json
+    pub fn save_session(
+        &self,
+        session_id: Option<&str>,
+        messages: &[super::ChatMessage],
+    ) -> Result<String, String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+
+        let id = match session_id {
+            Some(existing) if !existing.trim().is_empty() => existing.to_string(),
+            _ => uuid::Uuid::new_v4().to_string()[..8].to_string(),
+        };
+
         let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let title = messages.iter()
             .find(|m| m.role == "user")
             .map(|m| m.content.chars().take(50).collect::<String>())
-            .unwrap_or_else(|| "Untitled".to_string());
+            .unwrap_or_else(|| "新会话".to_string());
         let preview = messages.iter()
             .find(|m| m.role == "assistant")
             .map(|m| m.content.chars().take(100).collect::<String>())
@@ -54,17 +66,43 @@ impl SessionStore {
             preview,
         };
 
-        let mut sessions = self.load_all()?;
-        sessions.insert(0, record);
-        // 保留最近 200 条
+        // 1. 保存完整消息到独立文件
+        let msg_file = self.sessions_dir.join(format!("{}.json", id));
+        let msg_json = serde_json::to_string_pretty(messages)
+            .map_err(|e| format!("序列化完整会话消息失败: {}", e))?;
+        std::fs::write(&msg_file, msg_json)
+            .map_err(|e| format!("写入会话消息失败: {}", e))?;
+
+        // 2. 更新索引
+        let mut sessions = self.load_all_internal()?;
+        // 若已存在则更新，不存在则头部插入
+        if let Some(pos) = sessions.iter().position(|s| s.id == id) {
+            sessions[pos] = record;
+        } else {
+            sessions.insert(0, record);
+        }
         sessions.truncate(200);
-        self.write_all(&sessions)?;
+        self.write_all_internal(&sessions)?;
+
         Ok(id)
     }
 
-    /// 全文检索历史会话 (借鉴 Hermes 的 cross-session recall)
+    /// 加载指定会话的全部历史消息 (支持在前端一键恢复对话)
+    pub fn get_session_messages(&self, id: &str) -> Result<Vec<super::ChatMessage>, String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let msg_file = self.sessions_dir.join(format!("{}.json", id));
+        if !msg_file.exists() {
+            return Err("未找到该会话的历史消息文件".to_string());
+        }
+        let content = std::fs::read_to_string(&msg_file)
+            .map_err(|e| format!("读取会话消息失败: {}", e))?;
+        serde_json::from_str(&content).map_err(|e| format!("解析会话消息失败: {}", e))
+    }
+
+    /// 全文检索历史会话
     pub fn search_sessions(&self, query: &str) -> Result<Vec<SessionRecord>, String> {
-        let sessions = self.load_all()?;
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let sessions = self.load_all_internal()?;
         let q = query.to_lowercase();
         Ok(sessions.into_iter()
             .filter(|s| s.title.to_lowercase().contains(&q) || s.preview.to_lowercase().contains(&q))
@@ -73,17 +111,24 @@ impl SessionStore {
 
     /// 列出所有会话
     pub fn list_sessions(&self) -> Result<Vec<SessionRecord>, String> {
-        self.load_all()
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        self.load_all_internal()
     }
 
     /// 删除指定会话
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
-        let mut sessions = self.load_all()?;
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut sessions = self.load_all_internal()?;
         sessions.retain(|s| s.id != id);
-        self.write_all(&sessions)
+        self.write_all_internal(&sessions)?;
+
+        let msg_file = self.sessions_dir.join(format!("{}.json", id));
+        let _ = std::fs::remove_file(msg_file);
+
+        Ok(())
     }
 
-    fn load_all(&self) -> Result<Vec<SessionRecord>, String> {
+    fn load_all_internal(&self) -> Result<Vec<SessionRecord>, String> {
         if !self.db_path.exists() {
             return Ok(Vec::new());
         }
@@ -92,7 +137,7 @@ impl SessionStore {
         serde_json::from_str(&content).map_err(|e| format!("解析会话存储失败: {}", e))
     }
 
-    fn write_all(&self, sessions: &[SessionRecord]) -> Result<(), String> {
+    fn write_all_internal(&self, sessions: &[SessionRecord]) -> Result<(), String> {
         let json = serde_json::to_string_pretty(sessions)
             .map_err(|e| format!("序列化会话失败: {}", e))?;
         std::fs::write(&self.db_path, json)

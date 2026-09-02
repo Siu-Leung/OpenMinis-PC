@@ -95,6 +95,8 @@ export default function App() {
     };
   });
 
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+
   // 会话历史面板 (借鉴 Hermes cross-session recall)
   const [showSessions, setShowSessions] = useState(false);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
@@ -132,8 +134,15 @@ export default function App() {
       }
     });
 
+    const unlistenTaskPromise = listen<ScheduledTask>("scheduled-task-trigger", (event) => {
+      const task = event.payload;
+      setInput(task.prompt);
+      alert(`⏰ 定时自动化任务触发: [${task.name}]\n已填入指令: ${task.prompt}`);
+    });
+
     return () => {
       unlistenPromise.then(un => un());
+      unlistenTaskPromise.then(un => un());
     };
   }, []);
 
@@ -147,6 +156,17 @@ export default function App() {
       const list = await invoke<SessionRecord[]>("list_sessions");
       setSessions(list);
     } catch (e) { console.error("加载会话失败:", e); }
+  };
+
+  const handleLoadSession = async (id: string) => {
+    try {
+      const msgs = await invoke<ChatMessage[]>("get_session_messages", { id });
+      setMessages(msgs);
+      setCurrentSessionId(id);
+      setShowSessions(false);
+    } catch (e) {
+      alert("加载历史会话失败: " + e);
+    }
   };
 
   const handleSearchSessions = async () => {
@@ -240,7 +260,9 @@ export default function App() {
 
     try {
       const updatedMessages = await invoke<ChatMessage[]>("run_agent_turn", {
-        config, messages: nextHistory
+        config,
+        sessionId: currentSessionId,
+        messages: nextHistory
       });
       setMessages(updatedMessages);
     } catch (err: any) {
@@ -274,7 +296,8 @@ export default function App() {
 
   const handleClearHistory = () => {
     if (confirm("确定要清空当前对话上下文吗？（历史会话已自动保存）")) {
-      setMessages([{ role: "assistant", content: "已清空会话历史。请随时提出新要求！" }]);
+      setMessages([{ role: "assistant", content: "已开启新会话。请随时提出要求！" }]);
+      setCurrentSessionId(null);
     }
   };
 
@@ -497,14 +520,14 @@ export default function App() {
                 <div className="text-slate-500 text-center py-4">暂无历史会话记录</div>
               ) : sessions.map(s => (
                 <div key={s.id} className="p-2 rounded-lg bg-slate-900/60 border border-slate-800/60 flex items-center justify-between hover:border-slate-700">
-                  <div className="flex-1 min-w-0">
+                  <div onClick={() => handleLoadSession(s.id)} className="flex-1 min-w-0 cursor-pointer hover:text-cyan-300 transition">
                     <div className="text-slate-200 font-medium truncate">{s.title}</div>
                     <div className="text-[10px] text-slate-500 flex items-center gap-2">
                       <span>{s.created_at}</span><span>·</span><span>{s.message_count} 条消息</span>
                     </div>
                     <div className="text-[10px] text-slate-600 truncate mt-0.5">{s.preview}</div>
                   </div>
-                  <button onClick={() => handleDeleteSession(s.id)} className="text-slate-600 hover:text-rose-400 p-1">
+                  <button onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }} className="text-slate-600 hover:text-rose-400 p-1 ml-2">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>

@@ -67,6 +67,7 @@ pub struct StreamEvent {
 pub struct AgentEngine {
     pub dispatcher: Arc<ToolDispatcher>,
     pub http_client: reqwest::Client,
+    pub execution_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AgentEngine {
@@ -78,19 +79,23 @@ impl AgentEngine {
         Self {
             dispatcher,
             http_client,
+            execution_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    /// 执行一轮 Agent 对话与工具调度 (带死循环探测与 System Prompt 注入)
+    /// 执行一轮 Agent 对话与工具调度 (带并发互斥锁、死循环探测与 System Prompt 注入)
     pub async fn run_turn_stream(
         &self,
         app: &AppHandle,
         config: &AgentConfig,
         mut history: Vec<ChatMessage>,
     ) -> Result<Vec<ChatMessage>, String> {
+        // 0. 并发互斥锁：确保同一时刻只有一个 Agent Turn 在调度，彻底杜绝多请求 Token 串流打架
+        let _guard = self.execution_lock.lock().await;
+
         let tools_schema = self.get_tools_schema();
 
-        // 1. 确保头部注入了系统级 System Prompt
+        // 1. 确保头部注入了系统级 System Prompt (支持动态替换子角色 System Prompt)
         if history.is_empty() || history[0].role != "system" {
             let custom_sp = config.system_prompt.as_deref().unwrap_or(SYSTEM_PROMPT);
             history.insert(0, ChatMessage {
@@ -99,6 +104,8 @@ impl AgentEngine {
                 tool_calls: None,
                 tool_call_id: None,
             });
+        } else if let Some(custom_sp) = &config.system_prompt {
+            history[0].content = custom_sp.clone();
         }
 
         // 2. 死循环探测器记录：(tool_name, arguments_hash) -> 连续重复次数
@@ -259,6 +266,12 @@ impl AgentEngine {
                             tool_calls: None,
                             tool_call_id: Some(call_id),
                         });
+                        history.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: "⚠️ 已达工具调用安全上限（20次），已自动终止后续工具调度。".to_string(),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
                         return Ok(history);
                     }
 
@@ -281,6 +294,12 @@ impl AgentEngine {
                             content: json!({ "error": loop_err }).to_string(),
                             tool_calls: None,
                             tool_call_id: Some(call_id),
+                        });
+                        history.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: "⚠️ 检测到工具调用死循环，已启动安全熔断。请调整指令或参数重试。".to_string(),
+                            tool_calls: None,
+                            tool_call_id: None,
                         });
                         return Ok(history);
                     }

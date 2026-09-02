@@ -1,4 +1,4 @@
-//! OpenMinis Windows 浏览器自动化核心 (Edge Headless 真正完美落地版)
+//! OpenMinis Windows 浏览器自动化核心 (Edge Headless 加固版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use crate::sandbox::SandboxManager;
@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserActionParams {
@@ -55,22 +56,23 @@ impl BrowserEngine {
 
         match params.action.as_str() {
             "navigate" | "get_text" => {
-                // 1. 尝试使用 Windows 自带 Edge Headless 获取完整 JS 渲染后的 DOM
-                let edge_output = Command::new(edge_path)
+                // 1. 尝试使用 Windows 自带 Edge Headless 获取完整 JS 渲染后的 DOM (外层套 20 秒硬超时，防止假死)
+                let edge_future = Command::new(edge_path)
                     .args([
                         "--headless=new",
                         "--disable-gpu",
                         "--dump-dom",
-                        "--timeout=15000",
+                        "--timeout=12000",
                         &target_url,
                     ])
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
-                    .output()
-                    .await;
+                    .output();
+
+                let edge_output = timeout(Duration::from_secs(20), edge_future).await;
 
                 let raw_html = match edge_output {
-                    Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+                    Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
                     _ => {
                         // 降级使用沙箱 curl 抓取
                         let curl_cmd = format!("curl -sSL --max-time 15 '{}'", target_url.replace('\'', "'\\''"));
@@ -114,29 +116,29 @@ print(text[:10000])
             }
 
             "screenshot" => {
-                // 真实调用 Edge 生成网页像素级截图！
+                // 真实调用 Edge 生成网页像素级截图 (外层套 25 秒硬超时)
                 let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
                 let filename = format!("screenshot_{}.png", timestamp);
                 let wsl_path = format!("/var/minis/attachments/{}", filename);
                 let unc_host_path = format!(r"\\wsl$\{}\var\minis\attachments\{}", self.sandbox.distro_name, filename);
 
-                // 确保目录存在
                 let _ = self.sandbox.execute_shell("mkdir -p /var/minis/attachments", 5).await;
 
-                let edge_shot = Command::new(edge_path)
+                let edge_shot_future = Command::new(edge_path)
                     .args([
                         "--headless=new",
                         "--disable-gpu",
                         &format!("--screenshot={}", unc_host_path),
                         "--window-size=1280,800",
-                        "--timeout=20000",
+                        "--timeout=15000",
                         &target_url,
                     ])
-                    .output()
-                    .await;
+                    .output();
+
+                let edge_shot = timeout(Duration::from_secs(25), edge_shot_future).await;
 
                 match edge_shot {
-                    Ok(out) if out.status.success() => {
+                    Ok(Ok(out)) if out.status.success() => {
                         BrowserActionResult {
                             success: true,
                             data: Some(format!("minis://attachments/{}", filename)),
@@ -144,7 +146,7 @@ print(text[:10000])
                         }
                     }
                     _ => {
-                        // 回退生成合法图片
+                        // 降级回退生成合法图片
                         let fallback_cmd = format!(
                             "python3 -c \"
 with open('{path}', 'wb') as f:
