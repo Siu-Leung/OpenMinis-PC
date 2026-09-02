@@ -2,7 +2,7 @@
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use crate::browser::{BrowserActionParams, BrowserEngine};
-use crate::memory::{MemoryCategory, MemoryStore};
+use crate::memory::{MemoryCategory, MemoryStore, MemoryEntry};
 use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::Arc;

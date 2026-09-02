@@ -14,7 +14,7 @@ mod tools;
 
 use agent::{AgentConfig, AgentEngine, ChatMessage};
 use browser::BrowserEngine;
-use memory::{MemoryCategory, MemoryStore};
+use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use sandbox::SandboxManager;
 use scheduler::{CronScheduler, ScheduledTask, TaskRepeat};
 use session::SessionStore;

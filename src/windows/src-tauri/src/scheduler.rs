@@ -1,7 +1,7 @@
 //! OpenMinis Windows 定时任务调度 (借鉴 Hermes Cron & AionUi 24/7 Automation)
 //! 备注：私人用极度不稳定 Aicoding 改
 
-use chrono::{Local, NaiveTime, Weekday};
+use chrono::{Local, Datelike, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,10 +72,9 @@ impl CronScheduler {
     /// 检查当前时间是否有任务需要触发
     pub fn check_due_tasks(&self) -> Result<Vec<ScheduledTask>, String> {
         let now = Local::now();
-        let now_time = now.time();
-        let now_str = format!("{:02}:{:02}", now_time.hour(), now_time.minute());
-        let tasks = self.load_all()?;
+        let now_str = format!("{:02}:{:02}", now.hour(), now.minute());
         let weekday = now.weekday();
+        let tasks = self.load_all()?;
 
         Ok(tasks.into_iter()
             .filter(|t| {
