@@ -1,7 +1,11 @@
 # OpenMinis
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/Platforms-iOS%20%7C%20Android-lightgrey.svg)](#beta-programme)
+[![Platforms](https://img.shields.io/badge/Platforms-iOS%20%7C%20Android%20%7C%20Windows%20(Exp)-lightgrey.svg)](#beta-programme)
+
+> **⚠️ 声明 / Disclaimer**  
+> **备注：私人用极度不稳定 Aicoding 改**  
+> 本分支包含针对 Windows 桌面端的实验性移植改动（位于 `src/windows/`），基于 Tauri v2 + WSL2 Alpine 沙箱 + Edge WebView2。
 
 **Your private, on-device AI agent.**
 
