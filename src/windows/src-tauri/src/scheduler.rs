@@ -117,7 +117,7 @@ impl CronScheduler {
         }
         let content = std::fs::read_to_string(&self.tasks_path)
             .map_err(|e| format!("读取定时任务失败: {}", e))?;
-        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+        serde_json::from_str(&content).map_err(|e| format!("解析任务失败: {}", e))
     }
 
     fn write_all(&self, tasks: &[ScheduledTask]) -> Result<(), String> {

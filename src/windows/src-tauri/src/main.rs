@@ -16,7 +16,7 @@ use agent::{AgentConfig, AgentEngine, ChatMessage};
 use browser::BrowserEngine;
 use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use sandbox::SandboxManager;
-use scheduler::{CronScheduler, ScheduledTask, TaskRepeat};
+use scheduler::{CronScheduler, ScheduledTask};
 use session::SessionStore;
 use std::sync::Arc;
 use tauri::{AppHandle, State};

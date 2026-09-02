@@ -89,7 +89,7 @@ impl SessionStore {
         }
         let content = std::fs::read_to_string(&self.db_path)
             .map_err(|e| format!("读取会话存储失败: {}", e))?;
-        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+        serde_json::from_str(&content).map_err(|e| format!("解析会话存储失败: {}", e))
     }
 
     fn write_all(&self, sessions: &[SessionRecord]) -> Result<(), String> {
