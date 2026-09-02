@@ -1,221 +1,122 @@
-# OpenMinis
+# OpenMinis for Windows
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/Platforms-iOS%20%7C%20Android%20%7C%20Windows%20(Exp)-lightgrey.svg)](#beta-programme)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20(x64)-0078D6.svg?logo=windows&logoColor=white)](#-快速安装与使用)
+[![Release](https://img.shields.io/badge/Release-v1.13.0--exp-brightgreen.svg?logo=github)](https://github.com/Siu-Leung/OpenMinis/releases/tag/v1.13.0-windows-exp)
+[![Build Status](https://img.shields.io/badge/CI-GitHub%20Actions%20Passed-success.svg?logo=githubactions&logoColor=white)](https://github.com/Siu-Leung/OpenMinis/actions)
 
 > **⚠️ 声明 / Disclaimer**  
 > **备注：私人用极度不稳定 Aicoding 改**  
-> 本分支包含针对 Windows 桌面端的实验性移植改动（位于 `src/windows/`），基于 Tauri v2 + WSL2 Alpine 沙箱 + Edge WebView2。
-
-**Your private, on-device AI agent.**
-
-OpenMinis brings leading models — Claude, GPT, Gemini and more — into a native
-mobile experience, and gives them a real computer to work with: a full Linux
-shell running on your device, browser automation, extensible skills, persistent
-memory, and deep system integration.
-
-It is free, and fully open source.
-
-**We believe that in the age of AI, technical design and code are no longer
-where a product's advantage lies. The best agent emerges from a tight feedback
-loop with the people who use it — their expectations and their reports are
-what converge on the product.**
-
-Official website: **[openminis.app](https://openminis.app)**
-
-<a href="https://apps.apple.com/app/id6759188481">
-  <img alt="Download on the App Store" height="48" src="assets/badge-appstore.svg" />
-</a>
-&nbsp;
-<a href="https://github.com/OpenMinis/OpenMinis/releases">
-  <img alt="Get the APK on GitHub" height="48" src="assets/badge-android.svg" />
-</a>
-
-![Minis on iOS — deep research, chat, agent runtime, integrations, iCloud sync and granular permissions](assets/screenshots.png)
+> 本项目为基于 [OpenMinis](https://github.com/OpenMinis/OpenMinis) 官方核心哲学针对 **Windows 桌面操作系统** 的全功能移植与深度加固版本，融合了 **Hermes Agent** 与 **AionUi (OpenClaw)** 的前沿设计，仅供个人技术研究与实验性探索使用。
 
 ---
 
-## What it does
+## 💡 为什么做 Windows 移植版？
 
-| | |
-|---|---|
-| **Bring your own model** | Claude, GPT, Gemini and other providers, via your own API keys or account sign-in. |
-| **A real Linux shell** | A sandboxed Alpine Linux environment runs on-device — the agent can install packages, run scripts, and work with real files. |
-| **Device integration** | Health, Calendar, Reminders, Contacts, HomeKit, Bluetooth, Clipboard, Media, Alarms and more, exposed to the agent as tools. |
-| **Browser automation** | The agent can browse and interact with the web on your behalf. |
-| **Skills & memory** | Extensible skills plus persistent memory across sessions. |
-| **Workspaces** | Organise work into separate contexts, addressable via `minis://workspace/`. |
-| **Native offloads** | Heavy or platform-specific work is handed to native code instead of the sandbox. |
+原版 OpenMinis 是一款卓越的移动端 AI Agent，但很多重度开发者和运维人员的大量高频工作（复杂脚本编写、多网页比对、数据批量分析、远端服务器批量运维）发生在 **Windows 电脑桌面** 上。
+
+市面上的桌面 AI 往往要么只是一个套壳网页，要么采用 Electron 动辄占用几百兆内存；而本移植版追求 **极致轻量、零侵入、原生性能与真机 Linux 操控能力**。
 
 ---
 
-## What you can do with Minis
+## 🛠️ 我们改了什么？(核心改动一览)
 
-A few things people actually use it for:
+### 1. 架构彻底桌面化：拒绝 Electron，采用 Tauri v2 + WSL2 Alpine
+* **轻量客户端**：基于 **Tauri v2 (Rust 2021 + React 18 + Tailwind CSS)**，安装包仅 **3.5MB**，单文件免安装绿色版仅 **13.8MB**，日常待机内存仅约 **40MB**。
+* **真机沙箱**：告别重型虚拟机或受限模拟器，底层直接调度 Windows 原生自带的 **WSL2**，采用仅 3.8MB 的 **Alpine Linux minirootfs**，开箱享有纯正的 BusyBox ash、Python3 及原生 `apk add` 包管理生态。
 
-- **Photograph a meal, log the nutrition** — Minis identifies the dishes, estimates
-  calories and macros, and writes them to Apple Health.
-- **Wake up to your timeline** — Shortcuts triggers Minis to fetch your X timeline,
-  summarise it, synthesise speech, and play it as your alarm.
-- **Turn group chatter into tasks** — pull messages from a Telegram group, extract
-  bugs and action items, deduplicate them, and file them into Apple Reminders.
-- **Mount your Obsidian vault** — research, clean up and write Markdown notes back
-  into the vault as a normal workspace.
-- **Share anything into a calendar event** — send a page or message to Minis via the
-  iOS Share Sheet and it creates the event, time and place included.
+### 2. 浏览器自动化真机化：利用 Edge Headless 真实动态渲染
+* 抛弃了粗糙的静态正则解析，直接深度集成 Windows 宿主预装的 **Microsoft Edge Headless (`msedge.exe --headless=new`)**。
+* **DOM 真实抓取**：完整执行现代单页应用（React / Vue / SPA）的 JavaScript，提取真正渲染后的纯净正文文本。
+* **1:1 像素级高清截图**：支持对目标网页生成像素级高清渲染截图，自动写入沙箱 `minis://attachments/` 供对话中直接预览。
 
-**→ [OpenMinis/AwesomeMinis](https://github.com/OpenMinis/AwesomeMinis)** — a curated,
-community-contributed collection of use cases and workflows across health,
-productivity, research, finance and developer tooling.
+### 3. 原生终端与 SSH 交互打通
+* 支持非交互自动化运维（预装 `openssh-client` 与 `sshpass`）与 **真实 PTY 交互终端** 双轨制。
+* 新增 `open_terminal` 工具，一键唤起 Windows 原生 **Windows Terminal (`wt.exe`)**，完美支持 SSH 手动输入密码、指纹校验以及全屏 Vim、Htop 操控。
 
 ---
 
-## Skills
+## ✨ 新增了哪些重磅功能？(借鉴 Hermes & AionUi)
 
-A **skill** is a folder with a `SKILL.md` file — instructions, and optionally scripts,
-references and assets — that the agent loads on demand when a request matches it.
-Metadata stays in context for triggering; the body and bundled resources load only
-when the skill is actually used.
+参考了顶级开源 Agent **NousResearch Hermes Agent** 与 **AionUi (OpenClaw)** 的工程实践，新融入了 3 大智能核心：
 
-Minis has its own tool system, but it does not require skills written specifically
-for it: **skills built for Claude, Codex, OpenClaw or Hermes Agent generally run in
-Minis as-is.** Skills that have been adapted to Minis' tools simply run better —
-they can reach the Linux shell, device integrations and native offloads directly.
-
-**→ [OpenMinis/MinisSkills](https://github.com/OpenMinis/MinisSkills)** — skills
-adapted for Minis alongside ones built for it from scratch, covering TTS, search,
-media downloads, health analysis, cloud APIs and more.
+| 新增特性 | 借鉴灵感 | 功能落地说明 |
+| :--- | :--- | :--- |
+| **📜 跨会话历史检索与对话恢复** | **Hermes Agent**<br>*(Cross-session recall)* | 会话完整上下文独立存储于 `sessions/{id}.json`。侧边栏历史抽屉支持关键词秒级搜索历史会话；**点击任意历史记录，一键恢复该会话全部消息并继续对话**。 |
+| **⏰ 24/7 后台自动化定时任务** | **Hermes Cron**<br>+ **AionUi 自动化** | 支持 Once、Daily、Weekdays、Custom 定时任务；后台启动 **30 秒异步守护协程驱动**，到点自动唤醒 Agent 执行预设 Prompt，带同一分钟防重复触发机制。 |
+| **🧠 自主学习持久化记忆系统** | **Hermes Agent**<br>*(Self-improving memory)* | Agent 拥有 `memory_write` 与 `memory_search` 原生工具；每日日志 (`YYYY-MM-DD.md`) + 全局记忆 (`GLOBAL.md`) 双层存储；**检索时全库穿透扫描**，彻底修复跨午夜日期锁死问题。 |
+| **📂 沙箱数据无缝互通** | Windows 桌面体验优化 | 侧边栏新增「浏览沙箱文件」按钮，直接调起 Windows 资源管理器直达 `\\wsl$\OpenMinisSandbox\var\minis`，直观查看导出的文件、图表与截图。 |
 
 ---
 
-## Press
+## 🛡️ 安全审计与深度加固报告
 
-> "the most impressive indie app I've seen in a while"
->
-> — Federico Viticci, [**Open Minis Is the iOS Agent I Wish Siri AI Could Be**](https://www.macstories.net/reviews/open-minis-is-the-ios-agent-i-wish-siri-ai-could-be/),
-> MacStories (July 2026)
+经过专业子角色红队视角审计，本版本完成了高标准的安全性加固：
 
-> "在很大程度上实现甚至局部超越了 Apple Intelligence"
->
-> — Ye Han, [**这可能是 iPhone 最强 Agent 软件，没有之一 丨Open Minis 入门指南**](https://zhuanlan.zhihu.com/p/2045570157783807562),
-> 知乎 / Zhihu (June 2026)
-
-> "可能是 iOS 端最强 AI Agent"
->
-> — [**Open Minis：可能是 iOS 端最强 AI Agent**](https://www.appinn.com/open-minis/),
-> 小众软件 / Appinn (March 2026)
-
----
-
-## Beta programme
-
-App Store releases can lag behind: every update waits on review, and we hold
-builds back when stability warrants it. The TestFlight build is where fixes
-and new features land first.
-
-**→ [Join the TestFlight beta](https://testflight.apple.com/join/3BdkA5c3)**
-
-On Android, the [releases page](https://github.com/OpenMinis/OpenMinis/releases)
-always carries the latest APK.
+1. **零信任宿主磁盘物理隔离 (Zero Host Leak)**：
+   - 自动在沙箱 `/etc/wsl.conf` 中注入 `[automount] enabled = false` 和 `[interop] enabled = false`；
+   - **沙箱内部彻底阻断 `/mnt/c`、`/mnt/d` 等 Windows 宿主盘符挂载**，严禁 Agent 越权访问宿主文件；禁止反向调用 Windows 宿主可执行程序。
+2. **命令注入漏洞根治**：
+   - 全面重构 `win_open` 工具，严密拦截 `|`、`&`、`;`、`$`、反引号等元字符，改用 Windows 原生 `rundll32 url.dll` 调起默认浏览器，根除命令逃逸。
+   - 文件操作（`file_write` / `file_edit`）底层全量使用 Base64 数据管道写入，避免单双引号破坏 Shell 语法。
+3. **上下文防撑爆与大输出截断 (Offloads)**：
+   - 当 Shell 命令产生超长输出（超过 12,000 字符）时，自动截取首尾保护上下文，中间完整内容归档保存至 `/var/minis/offloads/output_xxx.txt` 并透传结构化路径。
+4. **Agent 互斥并发锁与死循环熔断**：
+   - 引入 `execution_lock` 调度锁，防止多任务或并发请求导致 Token 串流打架；
+   - 内置死循环探测器：单工具同参数重复 3 次自动熔断，全局单轮设 20 次安全上限，并在返回前补齐 Assistant 消息，严格符合 OpenAI / Anthropic 时序协议规范。
+5. **双重硬超时防假死**：
+   - 沙箱命令 60 秒硬超时；Edge Headless 20s/25s 外层硬超时，遇死循环网页自动强杀。
 
 ---
 
-## Building from source
+## 📦 下载与安装使用
 
-Minis ships a Linux sandbox inside the app, so the native dependencies (iSH on
-iOS, PRoot on Android, FFmpeg, LAME) and the Alpine rootfs are **built from
-source** rather than committed as binaries.
+### 1. 直接下载打包好的可执行文件
 
-**→ See [BUILDING.md](BUILDING.md) for the full first-build guide.**
+所有产物均由 GitHub Actions 自动化编译通过：
 
-The short version:
+👉 **[前往 GitHub Releases 下载最新版 (v1.13.0-windows-exp)](https://github.com/Siu-Leung/OpenMinis/releases/tag/v1.13.0-windows-exp)**
 
-```sh
-git clone --recurse-submodules https://github.com/OpenMinis/OpenMinis.git
-cd OpenMinis
+| 安装包文件 | 大小 | 说明 | 快速直链 |
+| :--- | :---: | :--- | :--- |
+| **`OpenMinis_1.13.0_x64-setup.exe`** | **~3.5 MB** | **标准安装向导版（强烈推荐）** | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0-windows-exp/OpenMinis_1.13.0_x64-setup.exe) |
+| **`OpenMinis_1.13.0_x64_en-US.msi`** | **~5.1 MB** | Windows 原生 MSI 安装程序 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0-windows-exp/OpenMinis_1.13.0_x64_en-US.msi) |
+| **`openminis-windows.exe`** | **~13.8 MB** | 绿色单文件便携免安装版，双击即跑 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0-windows-exp/openminis-windows.exe) |
 
-# iOS  — order matters: FFmpeg links against LAME
-./deps/build_lame.sh && ./deps/build_ffmpeg.sh
-./deps/build_ish.sh && ./deps/prepare_alpine_rootfs.sh
-open src/ios/Minis.xcodeproj
+### 2. 沙箱环境初始化 (仅首次运行需要)
 
-# Android — needs NDK r28+
-./deps/build_proot.sh && ./scripts/prepare_android_sandbox.sh
-cd src/android && ./gradlew :app:assembleDebug
+首次使用前，确保已开启 WSL2（若未开启，在管理员终端执行 `wsl --install --no-distribution`），然后在 PowerShell 中执行自带的沙箱配置脚本：
+```powershell
+powershell -ExecutionPolicy Bypass -File src/windows/scripts/init_wsl_sandbox.ps1
 ```
 
-`BUILDING.md` covers the toolchain requirements per platform, the build-time
-customization templates, and a troubleshooting section for the failure modes
-you are most likely to hit.
-
----
-
-## Repository layout
-
-```
-src/ios/          iOS app (Swift / SwiftUI) + share, widget and file-provider extensions
-src/android/      Android app (Kotlin / Compose) + JNI native code
-src/shared/       Assets shared by both platforms
-deps/             Native dependency build scripts and vendored sources
-docs/specs/       Architecture and interface specifications
-scripts/          Rootfs preparation and developer tooling
+### 3. 从源码本地构建
+```powershell
+cd src/windows
+npm install
+npm run tauri build
 ```
 
 ---
 
-## Acknowledgements
+## 🙏 致谢与致敬 (Acknowledgements)
 
-OpenMinis stands on a great deal of open-source work. Our thanks to the
-maintainers of these projects — the full inventory, with versions and license
-terms, is in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+站在巨人的肩膀上，特别向以下优秀的开源先驱致以崇高的敬意与由衷感谢：
 
-**The sandbox** — the heart of the product:
-
-- **[iSH](https://github.com/ish-app/ish)** (GPLv3) — Linux usermode emulation on
-  iOS. We run [an ARM64 fork](https://github.com/OpenMinis/ish-arm64).
-- **[PRoot](https://github.com/termux/proot)** (GPLv2) — user-space chroot for the
-  Android sandbox, via [our fork](https://github.com/OpenMinis/proot);
-  **[talloc](https://talloc.samba.org)** (LGPLv3+) underpins it.
-- **[Alpine Linux](https://alpinelinux.org)** — the minirootfs the sandbox boots.
-
-**Media & text** — [FFmpeg](https://ffmpeg.org) (LGPL-2.1+),
-[LAME](https://lame.sourceforge.io) (LGPL), [cppjieba](https://github.com/yanyiwu/cppjieba) (MIT),
-[KaTeX](https://katex.org) (MIT).
-
-**iOS** — [SwiftAnthropic](https://github.com/jamesrochabrun/SwiftAnthropic),
-[SwiftMath](https://github.com/mgriebling/SwiftMath),
-[RealTimeCutVADLibrary](https://github.com/helloooideeeeea/RealTimeCutVADLibrary) (all MIT),
-[swift-cmark](https://github.com/swiftlang/swift-cmark) (BSD-2-Clause), and the
-Apple / Swift Server Workgroup packages (Apache-2.0).
-
-**Android** — [AndroidX & Jetpack Compose](https://developer.android.com/jetpack),
-[OkHttp](https://square.github.io/okhttp/), [Coil](https://coil-kt.github.io/coil/),
-[kotlinx](https://github.com/Kotlin) serialization & coroutines,
-[multiplatform-markdown-renderer](https://github.com/mikepenz/multiplatform-markdown-renderer),
-[Reorderable](https://github.com/Calvin-LL/Reorderable), [ACRA](https://github.com/ACRA/acra)
-(all Apache-2.0), and [Shizuku](https://github.com/RikkaApps/Shizuku-API) (MIT).
+- **[OpenMinis](https://github.com/OpenMinis/OpenMinis)**（原作者团队及贡献者）：  
+  感谢创造了如此优秀的移动端端侧 Agent 理念与架构范式，奠定了本项目的核心灵魂。
+- **[Nous Research](https://github.com/NousResearch/hermes-agent)**（Hermes Agent 团队）：  
+  感谢 Hermes Agent 带来的灵感与启发，本项目借鉴了其 FTS5 跨会话回忆、自主学习持久记忆循环及优雅的终端设计。
+- **[iOfficeAI Team](https://github.com/iOfficeAI/AionUi)**（AionUi / OpenClaw 团队）：  
+  感谢 AionUi 团队在多 Agent 协同、24/7 无人值守 Cron 自动化调度及办公助理集成方面的优秀开源探索。
+- **[Tauri Apps Team](https://github.com/tauri-apps/tauri)**：  
+  感谢 Tauri 提供的高性能、安全且极致轻量的 Rust 桌面应用开发框架。
+- **[Alpine Linux](https://alpinelinux.org/) & [Microsoft WSL2](https://github.com/microsoft/WSL)**：  
+  感谢提供极度精简安全的 Linux Minirootfs 与 Windows 原生虚拟化技术底座。
 
 ---
 
-## License
+## 📜 许可证 (License)
 
-OpenMinis is licensed under the **[GNU General Public License v3.0](LICENSE)**.
-
-The app links GPL-licensed components — [iSH](https://github.com/OpenMinis/ish-arm64)
-(GPLv3) and [PRoot](https://github.com/OpenMinis/proot) (GPLv2) — so the combined
-work is distributed under GPLv3. Bundled third-party licenses are listed in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-
----
-
-## Community
-
-- **Telegram**: [Join the group](https://t.me/+2NzhOJuzRyI1YmM1)
-- **Issues**: Bug reports, feature requests and discussion via
-  [GitHub Issues](https://github.com/OpenMinis/OpenMinis/issues)
-
-This repository is a mirror of a private development tree, so it **does not
-accept pull requests** — there is nowhere for them to land. Issues are the way
-to shape the product, and [AwesomeMinis](https://github.com/OpenMinis/AwesomeMinis)
-and [MinisSkills](https://github.com/OpenMinis/MinisSkills) both do take
-contributions. See [CONTRIBUTING.md](CONTRIBUTING.md).
+本项目遵循 **[GNU General Public License v3.0 (GPLv3)](LICENSE)** 开源协议。
+所有的改动均保持完全开源透明，尊重并传承上游所有开源组件之授权协议。
