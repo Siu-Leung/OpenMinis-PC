@@ -82,6 +82,7 @@ wsl -d $DistroName -u root --exec /bin/sh -c "echo '$b64Conf' | base64 -d > /etc
 Write-Host "`n[5/6] 配置 Alpine 沙箱内部环境与运行工具箱..." -ForegroundColor Green
 $initScript = @'
 mkdir -p /var/minis/workspace /var/minis/attachments /var/minis/shared /var/minis/offloads /var/minis/memory
+chmod 000 /mnt 2>/dev/null || true
 sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories 2>/dev/null || true
 echo "nameserver 1.1.1.1" > /etc/resolv.conf
 apk update

@@ -231,6 +231,15 @@ export default function App() {
             </button>
 
             <button
+              onClick={() => invoke("open_sandbox_dir").catch(e => alert("打开目录失败: " + e))}
+              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium bg-slate-800/40 hover:bg-slate-800/80 text-slate-300 border border-slate-800/60 transition"
+              title="在 Windows 资源管理器中查看 /var/minis 数据"
+            >
+              <ExternalLink className="w-4 h-4 text-emerald-400" />
+              浏览沙箱文件 (/var/minis)
+            </button>
+
+            <button
               onClick={() => setShowSettings(true)}
               className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium bg-slate-800/40 hover:bg-slate-800/80 text-slate-300 border border-slate-800/60 transition"
             >

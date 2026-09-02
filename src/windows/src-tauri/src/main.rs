@@ -47,6 +47,11 @@ async fn run_agent_turn(
 }
 
 #[tauri::command]
+async fn open_sandbox_dir(state: State<'_, AppState>, subpath: Option<String>) -> Result<(), String> {
+    state.sandbox.open_in_explorer(&subpath.unwrap_or_default())
+}
+
+#[tauri::command]
 async fn terminate_sandbox(state: State<'_, AppState>) -> Result<(), String> {
     state.sandbox.terminate_sandbox().await;
     Ok(())
@@ -72,6 +77,7 @@ fn main() {
             check_sandbox_status,
             execute_sandbox_shell,
             run_agent_turn,
+            open_sandbox_dir,
             terminate_sandbox
         ])
         .run(tauri::generate_context!())
