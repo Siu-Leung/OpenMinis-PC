@@ -2,6 +2,7 @@
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use crate::browser::{BrowserActionParams, BrowserEngine};
+use crate::memory::{MemoryCategory, MemoryStore};
 use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -9,11 +10,12 @@ use std::sync::Arc;
 pub struct ToolDispatcher {
     pub sandbox: Arc<SandboxManager>,
     pub browser: Arc<BrowserEngine>,
+    pub memory: Arc<MemoryStore>,
 }
 
 impl ToolDispatcher {
-    pub fn new(sandbox: Arc<SandboxManager>, browser: Arc<BrowserEngine>) -> Self {
-        Self { sandbox, browser }
+    pub fn new(sandbox: Arc<SandboxManager>, browser: Arc<BrowserEngine>, memory: Arc<MemoryStore>) -> Self {
+        Self { sandbox, browser, memory }
     }
 
     /// 分发执行 LLM 的 Tool Call
@@ -121,6 +123,30 @@ impl ToolDispatcher {
                 let init_cmd = arguments.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
                 match self.sandbox.launch_interactive_terminal(init_cmd) {
                     Ok(_) => json!({ "success": true, "message": "已成功唤起独立交互终端窗口" }),
+                    Err(e) => json!({ "error": e }),
+                }
+            }
+
+            "memory_write" => {
+                let category = arguments.get("category").and_then(|v| v.as_str()).unwrap_or("fact");
+                let content = arguments.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let cat = match category {
+                    "preference" => MemoryCategory::UserPreference,
+                    "project" => MemoryCategory::ProjectContext,
+                    "skill" => MemoryCategory::LearnedSkill,
+                    "todo" => MemoryCategory::ActionItem,
+                    _ => MemoryCategory::Fact,
+                };
+                match self.memory.write_memory(cat, content) {
+                    Ok(id) => json!({ "success": true, "id": id }),
+                    Err(e) => json!({ "error": e }),
+                }
+            }
+
+            "memory_search" => {
+                let query = arguments.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                match self.memory.search_memory(query) {
+                    Ok(results) => json!({ "results": results }),
                     Err(e) => json!({ "error": e }),
                 }
             }

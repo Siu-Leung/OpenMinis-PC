@@ -32,6 +32,12 @@ Linux Sandbox Rules & Directories:
 - SSH & Remote operations:
   - For non-interactive scripts: use `sshpass -p <password> ssh -o StrictHostKeyChecking=no ...` or key-based auth `ssh -i <key> ...`.
   - For interactive logins where user needs to type passwords or view TUI: call `open_terminal` with the ssh command to launch Windows Terminal.
+
+Memory & Learning (borrowed from Hermes Agent):
+- memory_write: Persist important facts, user preferences, project context, or learned skills for cross-session recall.
+- memory_search: Search past memories by keyword to recall previous context before starting tasks.
+- Always check memory_search before starting a new task to leverage past knowledge.
+- Proactively save memories when you discover user preferences or important patterns.
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,6 +400,35 @@ impl AgentEngine {
                             "url": { "type": "string" }
                         },
                         "required": ["action"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_write",
+                    "description": "将重要事实、用户偏好、项目上下文或学到的技能持久化保存，供跨会话回忆",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "category": { "type": "string", "enum": ["preference", "project", "skill", "todo", "fact"] },
+                            "content": { "type": "string" }
+                        },
+                        "required": ["category", "content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_search",
+                    "description": "按关键词检索历史记忆，在开始新任务前回忆过往上下文",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string" }
+                        },
+                        "required": ["query"]
                     }
                 }
             }
