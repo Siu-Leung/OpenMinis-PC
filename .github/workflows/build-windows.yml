@@ -1,0 +1,88 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: '是否自动创建 GitHub Release 发布安装包'
+        required: false
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'src/windows/**'
+      - '.github/workflows/build-windows.yml'
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build OpenMinis for Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'src/windows/package.json'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'src/windows/src-tauri -> target'
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd src/windows
+          npm install
+
+      - name: Build Windows Binary & Installer (Tauri v2)
+        run: |
+          cd src/windows
+          npm run tauri build
+
+      - name: Prepare Artifacts
+        shell: bash
+        run: |
+          mkdir -p dist-artifacts
+          # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
+          find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
+          find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
+          ls -lh dist-artifacts/
+
+      - name: Upload Windows Installers (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenMinis-Windows-Installer
+          path: dist-artifacts/*
+          retention-days: 14
+
+      - name: Create Release (Optional)
+        if: ${{ github.event.inputs.release == 'true' || startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OpenMinis Windows v1.13.0 (Exp - 私人用极度不稳定 Aicoding 改)
+          tag_name: windows-v1.13.0-${{ github.run_number }}
+          body: |
+            ### OpenMinis for Windows (Experimental)
+            > **备注：私人用极度不稳定 Aicoding 改**
+            
+            - 基于 Tauri v2 + Rust 后端 + React 前端
+            - 集成 WSL2 Alpine Linux 独立隔离沙箱环境
+            - 自动集成 Edge WebView2 自动化与 Agent 调度
+          files: dist-artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
