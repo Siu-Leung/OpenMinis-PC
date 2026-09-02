@@ -46,7 +46,12 @@ impl BrowserEngine {
             }
         };
 
-        let edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
+        let edge_paths = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ];
+        let edge_path = edge_paths.iter().find(|p| std::path::Path::new(p).exists())
+            .unwrap_or(&edge_paths[0]);
 
         match params.action.as_str() {
             "navigate" | "get_text" => {

@@ -174,9 +174,11 @@ impl SandboxManager {
 
     /// 在 Windows 宿主拉起一个真正的全功能交互式终端窗口（支持 SSH 密码输入、Vim、Htop、PTY 按键）
     pub fn launch_interactive_terminal(&self, init_cmd: Option<String>) -> Result<(), String> {
+        // 安全过滤：禁止任何试图逃逸 sh -c 的危险字符
         let shell_arg = match init_cmd {
             Some(cmd) if !cmd.trim().is_empty() => {
-                format!("{}; exec /bin/sh", cmd)
+                let sanitized = cmd.replace('\'', "'\\''");
+                format!("{}; exec /bin/sh", sanitized)
             }
             _ => "exec /bin/sh".to_string(),
         };

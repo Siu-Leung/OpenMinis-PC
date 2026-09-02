@@ -65,9 +65,13 @@ pub struct AgentEngine {
 
 impl AgentEngine {
     pub fn new(dispatcher: Arc<ToolDispatcher>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             dispatcher,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -94,6 +98,8 @@ impl AgentEngine {
         // 2. 死循环探测器记录：(tool_name, arguments_hash) -> 连续重复次数
         let mut last_call_signature = String::new();
         let mut repeat_call_count = 0;
+        let max_total_tool_calls = 20usize;
+        let mut total_tool_calls = 0usize;
 
         for _ in 0..10 {
             let request_body = json!({
@@ -130,9 +136,13 @@ impl AgentEngine {
 
             let mut buffer = String::new();
 
-            while let Some(item) = stream.next().await {
-                let bytes = item.map_err(|e| format!("读取流数据中断: {}", e))?;
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
+            let mut done = false;
+            while !done {
+                let item = match stream.next().await {
+                    Some(item) => item.map_err(|e| format!("读取流数据中断: {}", e))?,
+                    None => break,
+                };
+                buffer.push_str(&String::from_utf8_lossy(&item));
 
                 while let Some(pos) = buffer.find('\n') {
                     let line = buffer[..pos].trim().to_string();
@@ -143,6 +153,7 @@ impl AgentEngine {
                     }
 
                     if line == "data: [DONE]" {
+                        done = true;
                         break;
                     }
 
@@ -229,6 +240,22 @@ impl AgentEngine {
                     let fn_args_str = call["function"]["arguments"].as_str().unwrap_or("{}");
 
                     // 3. 死循环探测与熔断拦截
+                    total_tool_calls += 1;
+                    if total_tool_calls > max_total_tool_calls {
+                        let limit_err = "已达工具调用上限 (20次)，本轮自动终止。".to_string();
+                        let _ = app.emit("agent-stream", StreamEvent {
+                            event_type: "error".to_string(),
+                            content: limit_err.clone(),
+                        });
+                        history.push(ChatMessage {
+                            role: "tool".to_string(),
+                            content: json!({ "error": limit_err }).to_string(),
+                            tool_calls: None,
+                            tool_call_id: Some(call_id),
+                        });
+                        return Ok(history);
+                    }
+
                     let current_sig = format!("{}:{}", fn_name, fn_args_str);
                     if current_sig == last_call_signature {
                         repeat_call_count += 1;

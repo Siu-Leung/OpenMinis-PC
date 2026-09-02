@@ -39,10 +39,19 @@ impl ToolDispatcher {
             "file_read" => {
                 let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 match self.sandbox.read_sandbox_file(path).await {
-                    Ok(content) => json!({
-                        "path": path,
-                        "content": content
-                    }),
+                    Ok(content) => {
+                        // 防止大文件撑爆上下文
+                        let truncated = if content.chars().count() > 15000 {
+                            let head: String = content.chars().take(15000).collect();
+                            format!("{}\n\n... [文件内容过长已截断，仅显示前 15000 字符]", head)
+                        } else {
+                            content
+                        };
+                        json!({
+                            "path": path,
+                            "content": truncated
+                        })
+                    }
                     Err(err) => json!({
                         "error": err
                     }),
