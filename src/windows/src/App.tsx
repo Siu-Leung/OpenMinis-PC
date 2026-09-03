@@ -400,6 +400,20 @@ export default function App() {
     }
   };
 
+  // 剪贴板图片粘贴 (Ctrl+V)
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith("image/")) {
+        const file = items[i].getAsFile();
+        if (file) {
+          processFile(file);
+          e.preventDefault();
+        }
+      }
+    }
+  };
+
   const processFile = (file: File) => {
     const isMedia = file.type.startsWith("image/");
     const sizeStr = file.size > 1024 * 1024 ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(file.size / 1024)} KB`;
