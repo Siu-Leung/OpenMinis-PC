@@ -1,7 +1,7 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Prevents console window on Windows
+#![windows_subsystem = "windows"]
 
-//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动与完整会话恢复)
+//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动 + 一键沙箱初始化 + 自动拉取模型)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 mod agent;
@@ -36,6 +36,11 @@ struct AppState {
 #[tauri::command]
 async fn check_sandbox_status(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.sandbox.check_sandbox_ready().await)
+}
+
+#[tauri::command]
+async fn auto_initialize_sandbox(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.sandbox.auto_initialize(&app).await
 }
 
 #[tauri::command]
@@ -79,6 +84,79 @@ async fn open_sandbox_dir(state: State<'_, AppState>, subpath: Option<String>) -
 async fn terminate_sandbox(state: State<'_, AppState>) -> Result<(), String> {
     state.sandbox.terminate_sandbox().await;
     Ok(())
+}
+
+// === 自动从供应商拉取可用模型列表 ===
+
+#[tauri::command]
+async fn fetch_provider_models(provider_url: String, api_key: String) -> Result<Vec<String>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let base = provider_url.trim_end_matches('/');
+    let primary_url = if base.ends_with("/v1") {
+        format!("{}/models", base)
+    } else {
+        format!("{}/v1/models", base)
+    };
+
+    let mut req = client.get(&primary_url);
+    if !api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                return parse_models_json(&json);
+            }
+        }
+        _ => {
+            // 备用 fallback: 直接 base/models
+            let fallback_url = format!("{}/models", base);
+            let mut req2 = client.get(&fallback_url);
+            if !api_key.trim().is_empty() {
+                req2 = req2.header("Authorization", format!("Bearer {}", api_key.trim()));
+            }
+            if let Ok(resp2) = req2.send().await {
+                if resp2.status().is_success() {
+                    if let Ok(json2) = resp2.json::<serde_json::Value>().await {
+                        return parse_models_json(&json2);
+                    }
+                }
+            }
+        }
+    }
+
+    Err("未能从供应商获取到模型列表，请确认 Base URL 与 API Key 是否正确".to_string())
+}
+
+fn parse_models_json(json: &serde_json::Value) -> Result<Vec<String>, String> {
+    let mut models = Vec::new();
+    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+        for m in data {
+            if let Some(id) = m.get("id").and_then(|i| i.as_str()) {
+                models.push(id.to_string());
+            }
+        }
+    } else if let Some(data) = json.get("models").and_then(|d| d.as_array()) {
+        for m in data {
+            if let Some(id) = m.get("name").or(m.get("id")).and_then(|i| i.as_str()) {
+                models.push(id.to_string());
+            }
+        }
+    }
+
+    models.sort();
+    models.dedup();
+
+    if models.is_empty() {
+        Err("供应商返回数据中未包含有效模型 ID".to_string())
+    } else {
+        Ok(models)
+    }
 }
 
 // === 会话管理命令 (Hermes 跨会话恢复与全文检索) ===
@@ -172,7 +250,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .setup(move |app| {
-            // 启动后台定时任务轮询协程 (每 30 秒轮询检查一次是否有任务到期)
+            // 后台定时任务守护协程 (每 30 秒轮询)
             let handle = app.handle().clone();
             let sched = cron_scheduler_clone;
             tauri::async_runtime::spawn(async move {
@@ -192,11 +270,13 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // 沙箱与 Agent
             check_sandbox_status,
+            auto_initialize_sandbox,
             execute_sandbox_shell,
             run_agent_turn,
             open_sandbox_dir,
             launch_interactive_terminal,
             terminate_sandbox,
+            fetch_provider_models,
             // 会话管理与恢复
             list_sessions,
             get_session_messages,

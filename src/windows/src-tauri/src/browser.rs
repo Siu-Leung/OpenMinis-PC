@@ -9,6 +9,9 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserActionParams {
     pub action: String,
@@ -57,19 +60,20 @@ impl BrowserEngine {
         match params.action.as_str() {
             "navigate" | "get_text" => {
                 // 1. 尝试使用 Windows 自带 Edge Headless 获取完整 JS 渲染后的 DOM (外层套 20 秒硬超时，防止假死)
-                let edge_future = Command::new(edge_path)
-                    .args([
-                        "--headless=new",
-                        "--disable-gpu",
-                        "--dump-dom",
-                        "--timeout=12000",
-                        &target_url,
-                    ])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output();
+                let mut edge_cmd = Command::new(edge_path);
+                edge_cmd.args([
+                    "--headless=new",
+                    "--disable-gpu",
+                    "--dump-dom",
+                    "--timeout=12000",
+                    &target_url,
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+                #[cfg(target_os = "windows")]
+                edge_cmd.creation_flags(0x08000000);
 
-                let edge_output = timeout(Duration::from_secs(20), edge_future).await;
+                let edge_output = timeout(Duration::from_secs(20), edge_cmd.output()).await;
 
                 let raw_html = match edge_output {
                     Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
@@ -124,18 +128,19 @@ print(text[:10000])
 
                 let _ = self.sandbox.execute_shell("mkdir -p /var/minis/attachments", 5).await;
 
-                let edge_shot_future = Command::new(edge_path)
-                    .args([
-                        "--headless=new",
-                        "--disable-gpu",
-                        &format!("--screenshot={}", unc_host_path),
-                        "--window-size=1280,800",
-                        "--timeout=15000",
-                        &target_url,
-                    ])
-                    .output();
+                let mut edge_shot_cmd = Command::new(edge_path);
+                edge_shot_cmd.args([
+                    "--headless=new",
+                    "--disable-gpu",
+                    &format!("--screenshot={}", unc_host_path),
+                    "--window-size=1280,800",
+                    "--timeout=15000",
+                    &target_url,
+                ]);
+                #[cfg(target_os = "windows")]
+                edge_shot_cmd.creation_flags(0x08000000);
 
-                let edge_shot = timeout(Duration::from_secs(25), edge_shot_future).await;
+                let edge_shot = timeout(Duration::from_secs(25), edge_shot_cmd.output()).await;
 
                 match edge_shot {
                     Ok(Ok(out)) if out.status.success() => {
