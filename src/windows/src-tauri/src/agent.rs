@@ -62,6 +62,7 @@ pub struct ChatMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
+    pub session_id: Option<String>,
     pub provider_id: Option<String>,
     pub provider_url: String,
     pub api_key: String,
@@ -274,6 +275,7 @@ impl AgentEngine {
 
                                     if p_tok > 0 || c_tok > 0 {
                                         self.usage_tracker.record_usage(
+                                            config.session_id.as_deref().unwrap_or("default"),
                                             try_model,
                                             config.provider_id.as_deref().unwrap_or("OPENAI"),
                                             p_tok,

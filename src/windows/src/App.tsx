@@ -13,7 +13,6 @@ import {
   Trash2,
   Terminal,
   ExternalLink,
-  Power,
   RotateCcw,
   Check,
   Copy,
@@ -33,19 +32,12 @@ import {
   ArrowLeft,
   Lock,
   BarChart3,
-  Palette,
   Sparkle,
   Lightbulb,
-  Cpu,
-  Key,
   Folder,
-  FolderUp,
-  Shield,
-  BatteryCharging,
-  FileCode,
-  Info,
-  MoreVertical,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Compass,
+  ArrowRight
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -114,6 +106,17 @@ interface FullModelGroupsState {
   agent_loop_models: { id: string; name: string; is_group: boolean; model_count: number }[];
 }
 
+interface ModelDetailMetrics {
+  display_pure_input: string;
+  display_output: string;
+  display_cached: string;
+  display_hit_rate: string;
+  display_daily_avg: string;
+  display_session_avg: string;
+  session_count: number;
+  active_days: number;
+}
+
 interface ModelUsageSummary {
   model_id: string;
   provider_id: string;
@@ -122,6 +125,7 @@ interface ModelUsageSummary {
   cached_tokens: number;
   display_input: string;
   display_output: string;
+  details: ModelDetailMetrics;
 }
 
 interface TotalUsageDashboard {
@@ -154,17 +158,16 @@ interface AttachmentItem {
   sizeStr: string;
 }
 
-// 模拟原版彩色马卡龙徽章配置
 const AVATAR_COLORS = [
-  { bg: "bg-[#E8F5E9]", text: "text-[#2E7D32]", icon: "chat" },
-  { bg: "bg-[#FFF3E0]", text: "text-[#E65100]", icon: "code" },
-  { bg: "bg-[#E1F5FE]", text: "text-[#0277BD]", icon: "gear" },
-  { bg: "bg-[#F3E5F5]", text: "text-[#7B1FA2]", icon: "brain" },
-  { bg: "bg-[#FBE9E7]", text: "text-[#D84315]", icon: "tool" },
+  { bg: "bg-[#E8F5E9]", text: "text-[#2E7D32]" },
+  { bg: "bg-[#FFF3E0]", text: "text-[#E65100]" },
+  { bg: "bg-[#E1F5FE]", text: "text-[#0277BD]" },
+  { bg: "bg-[#F3E5F5]", text: "text-[#7B1FA2]" },
+  { bg: "bg-[#FBE9E7]", text: "text-[#D84315]" },
 ];
 
 export default function App() {
-  // 沙箱与状态
+  // 沙箱状态与向导
   const [sandboxReady, setSandboxReady] = useState<boolean>(true);
   const [sandboxNeedRestart, setSandboxNeedRestart] = useState<boolean>(false);
   const [showInitModal, setShowInitModal] = useState<boolean>(false);
@@ -182,93 +185,67 @@ export default function App() {
 
   // 1:1 对标截图：全功能设置模态窗口及其子页面路由
   const [settingsView, setSettingsView] = useState<
-    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "soul"
+    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings"
   >("none");
 
-  // 数据源：供应商、模型组、用量仪表盘
-  const [providers, setProviders] = useState<Provider[]>(() => {
-    const saved = localStorage.getItem("openminis_providers_v3");
-    return saved ? JSON.parse(saved) : [
-      {
-        id: "Ds",
-        name: "Ds",
-        provider_url: "https://api.deepseek.com",
-        api_key: "",
-        models: ["deepseek-chat", "deepseek-reasoner"]
-      },
-      {
-        id: "AU",
-        name: "AU",
-        provider_url: "https://api.openai.com/v1",
-        api_key: "",
-        models: ["gemini-3.8-flash-high", "gpt-5.5", "deepseek-v4-flash", "deepseek-v4-pro", "gemini-2.5-flash"]
-      },
-      {
-        id: "HT",
-        name: "HT",
-        provider_url: "https://api.openai.com/v1",
-        api_key: "",
-        models: ["gpt-4o", "gpt-4o-mini", "o3-mini"]
-      },
-      {
-        id: "Siu1",
-        name: "Siu1",
-        provider_url: "https://api.openai.com/v1",
-        api_key: "",
-        models: ["gemini-3.8-flash-high", "gemini-3.7-flash-high"]
-      }
-    ];
+  // 内置独立浏览器窗口状态 (完全不依赖沙箱，开箱即用)
+  const [showBrowserWindow, setShowBrowserWindow] = useState<boolean>(false);
+  const [browserUrl, setBrowserUrl] = useState<string>("https://cn.bing.com");
+  const [currentNavUrl, setCurrentNavUrl] = useState<string>("https://cn.bing.com");
+
+  // 浏览器专属设置
+  const [browserSettings, setBrowserSettings] = useState({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    timeoutSecs: 20,
+    headlessDefault: true,
   });
 
+  // 纯净开箱：供应商默认纯空！
+  const [providers, setProviders] = useState<Provider[]>(() => {
+    const saved = localStorage.getItem("openminis_providers_v4_clean");
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [activeProviderId, setActiveProviderId] = useState<string>(() => {
+    return localStorage.getItem("openminis_active_provider_id_v4") || "";
+  });
+  const [activeModel, setActiveModel] = useState<string>(() => {
+    return localStorage.getItem("openminis_active_model_v4") || "";
+  });
+  const [thinkingLevel, setThinkingLevel] = useState<string>(() => {
+    return localStorage.getItem("openminis_thinking_level") || "high";
+  });
+
+  // 纯净开箱：模型组默认纯空！
   const [modelGroupsState, setModelGroupsState] = useState<FullModelGroupsState>({
-    groups: [
-      {
-        id: "group-au",
-        name: "AU",
-        is_primary: true,
-        fallback_models: ["gemini-3.8-flash-high", "gpt-5.5", "deepseek-v4-flash", "deepseek-v4-pro", "gemini-2.5-flash"],
-        description: "主力自动回退调度组 (5 models)"
-      }
-    ],
+    groups: [],
     defaults: {
-      default_primary_group: "AU",
+      default_primary_group: "无",
       default_sub_model: "无",
       voice_input: "无",
       voice_output: "无",
       vision_input: "无"
     },
-    agent_loop_models: [
-      { id: "loop-au", name: "AU", is_group: true, model_count: 5 }
-    ]
+    agent_loop_models: []
   });
 
+  // 纯净开箱：Token 用量默认纯 0！
   const [usageDashboard, setUsageDashboard] = useState<TotalUsageDashboard>({
-    total_input_tokens: 1601300000,
-    total_output_tokens: 4900000,
-    total_cached_tokens: 1387200000,
-    cache_hit_rate_pct: 86.6,
-    display_total_input: "1601.3M",
-    display_total_output: "4.9M",
-    display_cached_read: "1387.2M",
-    display_hit_rate: "86.6%",
-    model_rankings: [
-      { model_id: "gpt-5.6-sol", provider_id: "OPENAI", prompt_tokens: 404500000, completion_tokens: 571700, cached_tokens: 380000000, display_input: "404.5M", display_output: "571.7k" },
-      { model_id: "gemini-3.8-flash-high", provider_id: "OPENAI", prompt_tokens: 195900000, completion_tokens: 338100, cached_tokens: 170000000, display_input: "195.9M", display_output: "338.1k" },
-      { model_id: "GPT-5.5", provider_id: "OPENAI", prompt_tokens: 169400000, completion_tokens: 839700, cached_tokens: 140000000, display_input: "169.4M", display_output: "839.7k" },
-      { model_id: "gemini-3.7-flash-high", provider_id: "OPENAI", prompt_tokens: 157700000, completion_tokens: 685000, cached_tokens: 135000000, display_input: "157.7M", display_output: "685.0k" },
-      { model_id: "deepseek-v4-flash", provider_id: "OPENAI", prompt_tokens: 149400000, completion_tokens: 560800, cached_tokens: 125000000, display_input: "149.4M", display_output: "560.8k" },
-      { model_id: "deepseek-v4-pro", provider_id: "OPENAI", prompt_tokens: 30700000, completion_tokens: 140300, cached_tokens: 25000000, display_input: "30.7M", display_output: "140.3k" },
-    ]
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    total_cached_tokens: 0,
+    cache_hit_rate_pct: 0,
+    display_total_input: "0",
+    display_total_output: "0",
+    display_cached_read: "0",
+    display_hit_rate: "0.0%",
+    model_rankings: []
   });
-
-  const [activeModel, setActiveModel] = useState<string>("gemini-3.8-flash-high");
-  const [thinkingLevel, setThinkingLevel] = useState<string>("high");
 
   // 对话流状态
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱，已配置多模型组自动回退与真实 Token 统计跟踪。"
+      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境。支持多供应商管理、模型组自动回退、深度思考模式与真机浏览器自动化。随时提出要求！"
     }
   ]);
   const [input, setInput] = useState("");
@@ -288,16 +265,22 @@ export default function App() {
   // 折叠卡片状态
   const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<number, boolean>>({});
+  const [expandedUsageModels, setExpandedUsageModels] = useState<Record<string, boolean>>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   // 顶栏下拉
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
   const [memoryText, setMemoryText] = useState("");
+  const [fetchingModels, setFetchingModels] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const thinkingTimerRef = useRef<any>(null);
+
+  // 获取当前所有供应商拉取到的模型总池
+  const allAvailableModels = providers.flatMap(p => p.models);
+  const activeProvider = providers.find(p => p.id === activeProviderId) || providers[0];
 
   useEffect(() => {
     checkSandbox();
@@ -306,7 +289,6 @@ export default function App() {
     loadUsageDashboard();
     loadMcpServers();
 
-    // 监听实时流式事件
     const unlistenStream = listen<StreamEvent>("agent-stream", (event) => {
       const payload = event.payload;
       if (payload.event_type === "status") {
@@ -329,7 +311,6 @@ export default function App() {
       }
     });
 
-    // 监听原生拖拽
     let unlistenWebviewDrop: (() => void) | undefined;
     try {
       getCurrentWebview().onDragDropEvent(async (event) => {
@@ -387,9 +368,7 @@ export default function App() {
   const loadUsageDashboard = async () => {
     try {
       const dash = await invoke<TotalUsageDashboard>("get_usage_dashboard");
-      if (dash.total_input_tokens > 0) {
-        setUsageDashboard(dash);
-      }
+      setUsageDashboard(dash);
     } catch (_) {}
   };
 
@@ -405,6 +384,11 @@ export default function App() {
       const list = await invoke<SessionRecord[]>("list_sessions");
       setSessions(list);
     } catch (_) {}
+  };
+
+  const saveProviders = (newProviders: Provider[]) => {
+    setProviders(newProviders);
+    localStorage.setItem("openminis_providers_v4_clean", JSON.stringify(newProviders));
   };
 
   const handleImportFilePaths = async (paths: string[]) => {
@@ -432,9 +416,7 @@ export default function App() {
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || loading) return;
 
-    // 获取当前主力服务商
-    const activeProv = providers.find(p => p.models.includes(activeModel)) || providers[0];
-    if (!activeProv.api_key && activeProv.id !== "ollama") {
+    if (!activeProvider || (!activeProvider.api_key && activeProvider.id !== "ollama")) {
       setSettingsView("providers");
       return;
     }
@@ -484,14 +466,13 @@ export default function App() {
 
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
-    // 获取主模型组的 Fallback 回退队列！
-    const primaryGroup = modelGroupsState.groups.find(g => g.name === modelGroupsState.defaults.default_primary_group) || modelGroupsState.groups[0];
+    const primaryGroup = modelGroupsState.groups.find(g => g.name === modelGroupsState.defaults.default_primary_group);
     const fallbackList = primaryGroup ? primaryGroup.fallback_models : [];
 
     const agentCfg: AgentConfig = {
-      provider_id: activeProv.id,
-      provider_url: activeProv.provider_url,
-      api_key: activeProv.api_key,
+      provider_id: activeProvider.id,
+      provider_url: activeProvider.provider_url,
+      api_key: activeProvider.api_key,
       model: activeModel,
       fallback_models: fallbackList,
       thinking_level: thinkingLevel,
@@ -634,14 +615,14 @@ export default function App() {
                   <span>Rootfs 管理</span>
                 </button>
                 <button
-                  onClick={() => { setShowTopMenu(false); invoke("open_sandbox_dir"); }}
+                  onClick={() => { setShowTopMenu(false); setShowBrowserWindow(true); }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left"
                 >
-                  <Globe className="w-4 h-4 text-[#8E8E93]" />
+                  <Globe className="w-4 h-4 text-[#0A84FF]" />
                   <span>打开浏览器</span>
                 </button>
                 <button
-                  onClick={() => { setShowTopMenu(false); setSettingsView("root"); }}
+                  onClick={() => { setShowTopMenu(false); setSettingsView("browser_settings"); }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left border-t border-[#E5E5EA] dark:border-[#2C2C2E]"
                 >
                   <SettingsIcon className="w-4 h-4 text-[#8E8E93]" />
@@ -650,51 +631,55 @@ export default function App() {
               </div>
             )}
 
-            {/* 会话时间分组与列表项 (马卡龙柔和图标徽章) */}
+            {/* 会话列表 */}
             <div className="flex-1 overflow-y-auto min-h-0 divide-y divide-[#E5E5EA] dark:divide-[#1C1C1E]">
               <div className="px-4 py-2 text-[13px] font-bold text-[#8E8E93]">今天</div>
               
-              {sessions.map((s, idx) => {
-                const colorConfig = AVATAR_COLORS[idx % AVATAR_COLORS.length];
-                const isSelected = currentSessionId === s.id;
+              {sessions.length === 0 ? (
+                <div className="text-center py-10 text-xs text-[#8E8E93]">
+                  暂无历史会话，点击下方新建
+                </div>
+              ) : (
+                sessions.map((s, idx) => {
+                  const colorConfig = AVATAR_COLORS[idx % AVATAR_COLORS.length];
+                  const isSelected = currentSessionId === s.id;
 
-                return (
-                  <div
-                    key={s.id}
-                    onClick={() => {
-                      invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
-                        setMessages(msgs);
-                        setCurrentSessionId(s.id);
-                      });
-                    }}
-                    className={`flex items-center gap-3 px-4 py-3.5 cursor-pointer transition ${
-                      isSelected 
-                        ? "bg-[#E5E5EA]/60 dark:bg-[#1C1C1E]" 
-                        : "hover:bg-[#F2F2F7] dark:hover:bg-[#141416]"
-                    }`}
-                  >
-                    {/* 马卡龙圆形柔和徽章 */}
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text}`}>
-                      <Sparkle className="w-5 h-5" />
-                    </div>
+                  return (
+                    <div
+                      key={s.id}
+                      onClick={() => {
+                        invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
+                          setMessages(msgs);
+                          setCurrentSessionId(s.id);
+                        });
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3.5 cursor-pointer transition ${
+                        isSelected 
+                          ? "bg-[#E5E5EA]/60 dark:bg-[#1C1C1E]" 
+                          : "hover:bg-[#F2F2F7] dark:hover:bg-[#141416]"
+                      }`}
+                    >
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text}`}>
+                        <Sparkle className="w-5 h-5" />
+                      </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="font-semibold text-sm text-[#1C1C1E] dark:text-[#FFFFFF] truncate">
-                          {s.title}
-                        </span>
-                        <span className="text-[11px] text-[#8E8E93] shrink-0 font-normal">10 小时前</span>
-                      </div>
-                      <div className="text-xs text-[#8E8E93] truncate">
-                        {s.preview || "暂无最新消息摘要"}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="font-semibold text-sm text-[#1C1C1E] dark:text-[#FFFFFF] truncate">
+                            {s.title}
+                          </span>
+                          <span className="text-[11px] text-[#8E8E93] shrink-0 font-normal">刚才</span>
+                        </div>
+                        <div className="text-xs text-[#8E8E93] truncate">
+                          {s.preview || "暂无消息摘要"}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
 
-            {/* 右下角悬浮搜索与新建浮钮 */}
             <div className="p-4 border-t border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between">
               <button
                 onClick={() => {
@@ -718,10 +703,9 @@ export default function App() {
       )}
 
       {/* =========================================================================
-          2. 主聊天区 (1:1 原版排版 + 原生胶囊输入框 + 思考模式)
+          2. 主聊天区
       ========================================================================= */}
       <main className="flex-1 flex flex-col h-full bg-[#F2F2F7] dark:bg-[#000000] relative">
-        {/* 顶部极简导航栏 */}
         <header className="h-[52px] border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between px-4 shrink-0 bg-white/70 dark:bg-[#000000]/80 backdrop-blur-md z-10">
           <div className="flex items-center gap-2">
             {!sidebarOpen && (
@@ -734,19 +718,18 @@ export default function App() {
             )}
           </div>
 
-          {/* 顶栏中心：原版 Minis 模型与思考强度胶囊 */}
+          {/* 顶栏中心：模型与思考强度胶囊 */}
           <div className="relative">
             <button
               onClick={() => setShowModelPicker(!showModelPicker)}
               className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-medium text-[#1C1C1E] dark:text-[#FFFFFF] transition"
             >
-              <span className="truncate max-w-[200px]">{activeModel}</span>
+              <span className="truncate max-w-[200px]">{activeModel || "选择模型"}</span>
               <ChevronDown className="w-3.5 h-3.5 text-[#8E8E93]" />
             </button>
 
             {showModelPicker && (
               <div className="absolute top-10 left-1/2 -translate-x-1/2 w-80 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs">
-                {/* 思考强度分档 */}
                 <div className="pb-2.5 border-b border-[#E5E5EA] dark:border-[#2C2C2E] mb-2 space-y-1.5">
                   <div className="text-[11px] font-semibold text-[#8E8E93] flex items-center gap-1.5">
                     <Sliders className="w-3.5 h-3.5 text-[#0A84FF]" />
@@ -767,21 +750,33 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 快速切换主服务商与模型 */}
+                {/* 纯净可用模型池 */}
                 <div className="text-[11px] font-semibold text-[#8E8E93] mb-1">可用模型池</div>
                 <div className="max-h-60 overflow-y-auto space-y-1">
-                  {providers.flatMap(p => p.models).map(m => (
-                    <button
-                      key={m}
-                      onClick={() => { setActiveModel(m); setShowModelPicker(false); }}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs truncate transition flex items-center justify-between ${
-                        activeModel === m ? "bg-[#0A84FF] text-white" : "text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]"
-                      }`}
-                    >
-                      <span className="truncate">{m}</span>
-                      {activeModel === m && <Check className="w-3.5 h-3.5" />}
-                    </button>
-                  ))}
+                  {allAvailableModels.length === 0 ? (
+                    <div className="text-center py-6 text-xs text-[#8E8E93] space-y-2">
+                      <div>暂无可用模型</div>
+                      <button
+                        onClick={() => { setShowModelPicker(false); setSettingsView("providers"); }}
+                        className="text-[#0A84FF] hover:underline"
+                      >
+                        前往设置 → 添加 AI 服务商
+                      </button>
+                    </div>
+                  ) : (
+                    allAvailableModels.map(m => (
+                      <button
+                        key={m}
+                        onClick={() => { setActiveModel(m); setShowModelPicker(false); }}
+                        className={`w-full text-left px-3 py-1.5 rounded-lg text-xs truncate transition flex items-center justify-between ${
+                          activeModel === m ? "bg-[#0A84FF] text-white" : "text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]"
+                        }`}
+                      >
+                        <span className="truncate">{m}</span>
+                        {activeModel === m && <Check className="w-3.5 h-3.5" />}
+                      </button>
+                    ))
+                  )}
                 </div>
               </div>
             )}
@@ -821,7 +816,7 @@ export default function App() {
                     >
                       <IconComponent className={`w-3.5 h-3.5 ${info.color}`} />
                       <span className="font-mono text-[11px] text-[#1C1C1E] dark:text-[#D1D1D6]">{info.label}</span>
-                      {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                      {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                     </div>
 
                     {isExpanded && (
@@ -881,7 +876,6 @@ export default function App() {
               );
             })}
 
-            {/* 思考中与打字中实时流 */}
             {loading && streamingThinking && (
               <div className="flex flex-col space-y-2 text-[#8E8E93]">
                 <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-white dark:bg-[#141416] border border-[#0A84FF]/40 text-xs text-[#0A84FF] animate-pulse shadow-sm">
@@ -926,7 +920,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* 悬浮胶囊输入框 (图文混排 + 发送键) */}
+        {/* 悬浮胶囊输入框 */}
         <div className="p-4 shrink-0">
           <div className="max-w-3xl mx-auto bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-[26px] px-4 py-2.5 flex flex-col gap-2 focus-within:border-[#0A84FF] transition shadow-xl">
             {attachments.length > 0 && (
@@ -969,6 +963,7 @@ export default function App() {
                 ref={textareaRef}
                 rows={1}
                 value={input}
+                onPaste={handlePaste}
                 onChange={e => {
                   setInput(e.target.value);
                   e.target.style.height = "auto";
@@ -1006,7 +1001,6 @@ export default function App() {
       {settingsView === "root" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
-            {/* 顶栏 */}
             <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
               <div className="flex items-center gap-3">
                 <button onClick={() => setSettingsView("none")} className="text-black dark:text-white">
@@ -1016,9 +1010,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* 原版 Grouped 大卡片式设置列表 */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {/* LLM 提供商分组 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">LLM 提供商</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
@@ -1070,12 +1062,8 @@ export default function App() {
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
                   </div>
                 </div>
-                <div className="text-[11px] text-[#8E8E93] px-3 mt-1.5 leading-relaxed">
-                  配置 agent 使用的模型,管理每个提供商的 API key 与 OAuth,并创建模型组用于回退或负载均衡。
-                </div>
               </div>
 
-              {/* AGENT 运行时分组 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">AGENT 运行时</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
@@ -1116,7 +1104,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 存储分组 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">存储</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
@@ -1143,7 +1130,7 @@ export default function App() {
       )}
 
       {/* =========================================================================
-          4. AI 服务商页面 (1:1 完美复刻截图 1000143326.jpg)
+          4. AI 服务商页面 (纯净空状态 + 自行添加)
       ========================================================================= */}
       {settingsView === "providers" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
@@ -1158,78 +1145,114 @@ export default function App() {
               <button
                 onClick={() => {
                   const newId = `custom-${Date.now().toString(36)}`;
-                  setProviders(prev => [
-                    ...prev,
-                    { id: newId, name: "新建供应商", provider_url: "https://api.openai.com/v1", api_key: "", models: [] }
-                  ]);
+                  const newP = { id: newId, name: "新建供应商", provider_url: "https://api.openai.com/v1", api_key: "", models: [] };
+                  const next = [...providers, newP];
+                  saveProviders(next);
+                  if (!activeProviderId) setActiveProviderId(newId);
                 }}
                 className="text-black dark:text-white p-1"
+                title="添加新服务商"
               >
                 <Plus className="w-6 h-6" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div>
-                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">OPENAI</div>
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
-                  {providers.map(p => (
-                    <div key={p.id} className="p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]/40 transition space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-[#34C759] shrink-0" />
-                          <span className="text-base font-bold text-black dark:text-white">{p.name}</span>
-                        </div>
-                        <button
-                          onClick={async () => {
-                            try {
-                              const list = await invoke<string[]>("fetch_provider_models", { providerUrl: p.provider_url, apiKey: p.api_key });
-                              setProviders(prev => prev.map(item => item.id === p.id ? { ...item, models: list } : item));
-                            } catch (e) { alert(e); }
-                          }}
-                          className="text-xs text-[#0A84FF] hover:underline flex items-center gap-1 font-medium"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" /> 拉取模型
-                        </button>
-                      </div>
-
-                      <div className="text-xs text-[#8E8E93] flex items-center justify-between">
-                        <span>API Key · {p.api_key ? `${p.api_key.slice(0, 6)}...${p.api_key.slice(-4)}` : "未配置"}</span>
-                        <span>{p.models.length} 个模型</span>
-                      </div>
-
-                      <div className="pt-1 flex gap-2">
-                        <input
-                          type="password"
-                          value={p.api_key}
-                          onChange={e => {
-                            const val = e.target.value;
-                            setProviders(prev => prev.map(item => item.id === p.id ? { ...item, api_key: val } : item));
-                          }}
-                          placeholder="填入 API Key (sk-...)"
-                          className="flex-1 bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-1.5 text-xs text-black dark:text-white font-mono focus:outline-none"
-                        />
-                        <input
-                          type="text"
-                          value={p.provider_url}
-                          onChange={e => {
-                            const val = e.target.value;
-                            setProviders(prev => prev.map(item => item.id === p.id ? { ...item, provider_url: val } : item));
-                          }}
-                          className="flex-1 bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-1.5 text-xs text-black dark:text-white font-mono focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                  ))}
+              {providers.length === 0 ? (
+                <div className="text-center py-16 text-xs text-[#8E8E93] space-y-3">
+                  <Server className="w-10 h-10 mx-auto text-[#8E8E93]/60" />
+                  <div>暂无 AI 服务商，请点击右上角 <Plus className="w-4 h-4 inline" /> 添加</div>
                 </div>
-              </div>
+              ) : (
+                <div>
+                  <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">OPENAI / 兼容</div>
+                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                    {providers.map(p => (
+                      <div key={p.id} className="p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]/40 transition space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <span className={`w-2.5 h-2.5 rounded-full ${p.api_key ? "bg-[#34C759]" : "bg-[#FF9F0A]"} shrink-0`} />
+                            <input
+                              type="text"
+                              value={p.name}
+                              onChange={e => {
+                                const val = e.target.value;
+                                saveProviders(providers.map(item => item.id === p.id ? { ...item, name: val } : item));
+                              }}
+                              className="font-bold text-base bg-transparent border-none text-black dark:text-white focus:outline-none"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const list = await invoke<string[]>("fetch_provider_models", { providerUrl: p.provider_url, apiKey: p.api_key });
+                                  const updated = providers.map(item => item.id === p.id ? { ...item, models: list } : item);
+                                  saveProviders(updated);
+                                  if (list.length > 0 && (!activeModel || activeProviderId === p.id)) {
+                                    setActiveModel(list[0]);
+                                    setActiveProviderId(p.id);
+                                  }
+                                } catch (e) { alert(e); }
+                              }}
+                              className="text-xs text-[#0A84FF] hover:underline flex items-center gap-1 font-medium"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" /> 拉取模型
+                            </button>
+                            <button
+                              onClick={() => {
+                                const next = providers.filter(item => item.id !== p.id);
+                                saveProviders(next);
+                                if (activeProviderId === p.id) {
+                                  setActiveProviderId(next.length > 0 ? next[0].id : "");
+                                  setActiveModel(next.length > 0 && next[0].models.length > 0 ? next[0].models[0] : "");
+                                }
+                              }}
+                              className="text-[#8E8E93] hover:text-[#FF453A] p-1"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="text-xs text-[#8E8E93] flex items-center justify-between">
+                          <span>API Key · {p.api_key ? `${p.api_key.slice(0, 6)}...${p.api_key.slice(-4)}` : "未配置"}</span>
+                          <span>{p.models.length} 个模型</span>
+                        </div>
+
+                        <div className="pt-1 flex gap-2">
+                          <input
+                            type="password"
+                            value={p.api_key}
+                            onChange={e => {
+                              const val = e.target.value;
+                              saveProviders(providers.map(item => item.id === p.id ? { ...item, api_key: val } : item));
+                            }}
+                            placeholder="填入 API Key (sk-...)"
+                            className="flex-1 bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-1.5 text-xs text-black dark:text-white font-mono focus:outline-none"
+                          />
+                          <input
+                            type="text"
+                            value={p.provider_url}
+                            onChange={e => {
+                              const val = e.target.value;
+                              saveProviders(providers.map(item => item.id === p.id ? { ...item, provider_url: val } : item));
+                            }}
+                            className="flex-1 bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-1.5 text-xs text-black dark:text-white font-mono focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
 
       {/* =========================================================================
-          5. 模型分组与回退 (1:1 完美复刻截图 1000143328.jpg)
+          5. 模型分组与回退 (纯净空状态)
       ========================================================================= */}
       {settingsView === "model_groups" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
@@ -1241,35 +1264,52 @@ export default function App() {
                 </button>
                 <h2 className="text-lg font-bold text-black dark:text-white">模型分组</h2>
               </div>
-              <button className="text-black dark:text-white p-1">
+              <button
+                onClick={() => {
+                  const newG: ModelGroupItem = {
+                    id: `group-${Date.now().toString(36)}`,
+                    name: "新分组",
+                    is_primary: modelGroupsState.groups.length === 0,
+                    fallback_models: allAvailableModels.slice(0, 3),
+                    description: "自定义回退调度组"
+                  };
+                  const next = { ...modelGroupsState, groups: [...modelGroupsState.groups, newG] };
+                  setModelGroupsState(next);
+                  invoke("save_model_groups_state", { stateData: next });
+                }}
+                className="text-black dark:text-white p-1"
+              >
                 <Plus className="w-6 h-6" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {/* 分组列表卡片 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">分组</div>
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-2">
-                  {modelGroupsState.groups.map(g => (
-                    <div key={g.id} className="flex items-center justify-between">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-base text-black dark:text-white">{g.name}</span>
-                          <span className="text-[11px] bg-[#007AFF]/15 text-[#007AFF] px-2 py-0.5 rounded-full font-medium">Primary</span>
+                {modelGroupsState.groups.length === 0 ? (
+                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-6 border border-[#E5E5EA] dark:border-[#2C2C2E] text-center text-xs text-[#8E8E93]">
+                    暂无模型分组，请点击右上角 <Plus className="w-4 h-4 inline" /> 创建
+                  </div>
+                ) : (
+                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-2 divide-y divide-[#2C2C2E]">
+                    {modelGroupsState.groups.map(g => (
+                      <div key={g.id} className="flex items-center justify-between pt-2">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-base text-black dark:text-white">{g.name}</span>
+                            {g.is_primary && (
+                              <span className="text-[11px] bg-[#007AFF]/15 text-[#007AFF] px-2 py-0.5 rounded-full font-medium">Primary</span>
+                            )}
+                          </div>
+                          <div className="text-xs text-[#8E8E93]">回退 · {g.fallback_models.length} models</div>
                         </div>
-                        <div className="text-xs text-[#8E8E93]">回退 · {g.fallback_models.length} models</div>
-                        <div className="text-xs text-[#8E8E93] truncate max-w-md">
-                          {g.fallback_models.join(", ")}
-                        </div>
+                        <ChevronRight className="w-5 h-5 text-[#8E8E93]" />
                       </div>
-                      <ChevronRight className="w-5 h-5 text-[#8E8E93]" />
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Defaults 配置卡片 (1:1 复刻截图) */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">Defaults</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-3 text-xs">
@@ -1285,53 +1325,11 @@ export default function App() {
                       }}
                       className="w-full bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-2 text-black dark:text-white font-medium focus:outline-none"
                     >
+                      <option value="无">无</option>
                       {modelGroupsState.groups.map(g => (
                         <option key={g.id} value={g.name}>{g.name}</option>
                       ))}
                     </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[#8E8E93] mb-1">Default Sub</label>
-                    <select className="w-full bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-2 text-black dark:text-white font-medium focus:outline-none">
-                      <option>无</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[#8E8E93] mb-1">视觉输入</label>
-                    <select className="w-full bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-2 text-black dark:text-white font-medium focus:outline-none">
-                      <option>无</option>
-                    </select>
-                  </div>
-
-                  <div className="text-[11px] text-[#8E8E93] pt-1 leading-relaxed">
-                    主模型用于主要任务，辅助模型用于标题生成等轻量任务。未设置辅助模型时将继承主模型。
-                  </div>
-                </div>
-              </div>
-
-              {/* 智能体循环可用模型 */}
-              <div>
-                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">智能体循环可用模型</div>
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-3 text-xs">
-                  <div className="flex items-center justify-between p-2 rounded-xl bg-[#F2F2F7] dark:bg-[#141416]">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-black dark:text-white">AU</span>
-                      <span className="text-[10px] bg-[#007AFF]/15 text-[#007AFF] px-1.5 py-0.5 rounded">分组</span>
-                      <span className="text-[#8E8E93]">5 个模型</span>
-                    </div>
-                  </div>
-                  <div className="flex gap-2 pt-1">
-                    <button className="flex-1 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white font-semibold">
-                      + 添加模型
-                    </button>
-                    <button className="flex-1 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white font-semibold">
-                      + 添加分组
-                    </button>
-                  </div>
-                  <div className="text-[11px] text-[#8E8E93] leading-relaxed">
-                    这里列出的模型和分组可以在终端通过 minis-model-use 调用。只有这些对智能体可见。
                   </div>
                 </div>
               </div>
@@ -1341,7 +1339,7 @@ export default function App() {
       )}
 
       {/* =========================================================================
-          6. Token 用量仪表盘 (1:1 完美复刻截图 1000143344.jpg)
+          6. Token 用量仪表盘 (纯净真实 0 统计)
       ========================================================================= */}
       {settingsView === "usage" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
@@ -1356,7 +1354,6 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {/* 总用量白底/深灰大卡片 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">总用量</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-5 border border-[#E5E5EA] dark:border-[#2C2C2E] divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] space-y-3">
@@ -1379,24 +1376,79 @@ export default function App() {
                 </div>
               </div>
 
-              {/* OPENAI 各模型排行榜明细 (1:1 复刻截图) */}
               <div>
-                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">OPENAI</div>
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
-                  {usageDashboard.model_rankings.map(item => (
-                    <div key={item.model_id} className="flex items-center justify-between p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]/30 transition">
-                      <span className="text-sm font-semibold text-black dark:text-white truncate max-w-[240px]">
-                        {item.model_id}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-[#8E8E93] font-mono">
-                          {item.display_input} / {item.display_output}
-                        </span>
-                        <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">各模型消耗排行</div>
+                {usageDashboard.model_rankings.length === 0 ? (
+                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-6 border border-[#E5E5EA] dark:border-[#2C2C2E] text-center text-xs text-[#8E8E93]">
+                    暂无模型用量记录，产生对话后自动统计
+                  </div>
+                ) : (
+                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E] overflow-hidden">
+                    {usageDashboard.model_rankings.map(item => {
+                      const isExpanded = !!expandedUsageModels[item.model_id];
+                      return (
+                        <div key={item.model_id} className="transition">
+                          <div
+                            onClick={() => setExpandedUsageModels(prev => ({ ...prev, [item.model_id]: !prev[item.model_id] }))}
+                            className="flex items-center justify-between p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]/30 transition cursor-pointer select-none"
+                          >
+                            <span className="text-sm font-semibold text-black dark:text-white truncate max-w-[240px]">
+                              {item.model_id}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-[#8E8E93] font-mono">
+                                {item.display_input} / {item.display_output}
+                              </span>
+                              {isExpanded ? (
+                                <ChevronDown className="w-4 h-4 text-[#8E8E93]" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                              )}
+                            </div>
+                          </div>
+
+                          {/* 1:1 原版展开指标手风琴卡片 (对标截图 1000143557/1000143558) */}
+                          {isExpanded && item.details && (
+                            <div className="px-6 pb-4 pt-1 space-y-2 text-xs border-t border-[#E5E5EA]/60 dark:border-[#2C2C2E]/60 bg-[#FAFAFC] dark:bg-[#161618]">
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>输入</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.display_pure_input}</span>
+                              </div>
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>输出</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.display_output}</span>
+                              </div>
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>缓存读取</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.display_cached}</span>
+                              </div>
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>缓存命中率</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.display_hit_rate}</span>
+                              </div>
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>日均</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.display_daily_avg}</span>
+                              </div>
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>会话均值</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.display_session_avg}</span>
+                              </div>
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>会话</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.session_count}</span>
+                              </div>
+                              <div className="flex justify-between py-1 text-[#8E8E93]">
+                                <span>活跃天数</span>
+                                <span className="font-mono text-black dark:text-white">{item.details.active_days}</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1404,7 +1456,113 @@ export default function App() {
       )}
 
       {/* =========================================================================
-          7. MCP 集成界面
+          7. 独立内置浏览器窗口 (完全不依赖 WSL，开箱即用)
+      ========================================================================= */}
+      {showBrowserWindow && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-4xl h-[85vh] rounded-[24px] shadow-2xl flex flex-col overflow-hidden">
+            <div className="px-4 py-3 border-b border-[#2C2C2E] flex items-center justify-between bg-[#141416] gap-3">
+              <div className="flex items-center gap-2">
+                <Compass className="w-5 h-5 text-[#0A84FF]" />
+                <span className="text-xs font-semibold text-white">内置浏览器 (Edge/WebView2)</span>
+              </div>
+
+              <div className="flex-1 flex items-center gap-2 max-w-lg bg-[#1C1C1E] border border-[#2C2C2E] rounded-xl px-3 py-1">
+                <input
+                  type="text"
+                  value={browserUrl}
+                  onChange={e => setBrowserUrl(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") {
+                      let u = browserUrl.trim();
+                      if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
+                      setCurrentNavUrl(u);
+                    }
+                  }}
+                  className="flex-1 bg-transparent text-xs text-white focus:outline-none"
+                />
+                <button
+                  onClick={() => {
+                    let u = browserUrl.trim();
+                    if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
+                    setCurrentNavUrl(u);
+                  }}
+                  className="text-[#0A84FF] hover:text-white"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              <button onClick={() => setShowBrowserWindow(false)} className="text-[#8E8E93] hover:text-white p-1">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 bg-white relative">
+              <iframe
+                src={currentNavUrl}
+                className="w-full h-full border-none"
+                title="Minis Web Preview"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          8. 专门的浏览器设置面板 (不再跳到全局设置)
+      ========================================================================= */}
+      {settingsView === "browser_settings" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-md rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-[#2C2C2E]">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Globe className="w-4 h-4 text-[#0A84FF]" />
+                <span>浏览器自动化设置</span>
+              </div>
+              <button onClick={() => setSettingsView("none")} className="text-[#8E8E93] hover:text-white text-xs">✕</button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-[#8E8E93] mb-1">User-Agent 模拟身份</label>
+                <textarea
+                  rows={3}
+                  value={browserSettings.userAgent}
+                  onChange={e => setBrowserSettings({ ...browserSettings, userAgent: e.target.value })}
+                  className="w-full bg-[#141416] border border-[#2C2C2E] rounded-xl p-2.5 text-white font-mono text-[11px] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[#8E8E93] mb-1">网页抓取超时时间 (秒)</label>
+                <input
+                  type="number"
+                  value={browserSettings.timeoutSecs}
+                  onChange={e => setBrowserSettings({ ...browserSettings, timeoutSecs: parseInt(e.target.value) || 20 })}
+                  className="w-full bg-[#141416] border border-[#2C2C2E] rounded-xl px-3 py-2 text-white font-mono focus:outline-none"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-[#141416] border border-[#2C2C2E] text-[11px] text-[#8E8E93] leading-relaxed">
+                💡 浏览器自动化直接调度 Windows 宿主 Edge Headless，支持渲染 SPA 页面与生成高清网页截图，无需依赖 Linux 沙箱。
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-[#2C2C2E]">
+              <button
+                onClick={() => setSettingsView("none")}
+                className="bg-[#0A84FF] hover:bg-[#0071E3] text-white px-5 py-1.5 rounded-full text-xs font-semibold transition"
+              >
+                保存并关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          9. MCP / 记忆模态框
       ========================================================================= */}
       {settingsView === "mcp" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
@@ -1419,9 +1577,6 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              <div className="text-xs text-[#8E8E93] px-1 leading-relaxed">
-                连接 Model Context Protocol 服务器，工具将直接注册到沙箱调度池供 Agent 调用。
-              </div>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
                 {mcpServers.map(s => (
                   <div key={s.id} className="p-4 flex items-center justify-between">
@@ -1449,9 +1604,6 @@ export default function App() {
         </div>
       )}
 
-      {/* =========================================================================
-          8. 记忆系统查看
-      ========================================================================= */}
       {settingsView === "memory" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
@@ -1465,7 +1617,7 @@ export default function App() {
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs font-mono text-[#8E8E93] whitespace-pre-wrap leading-relaxed">
-                {memoryText || "暂无记忆"}
+                {memoryText || "今日暂无记录"}
               </div>
             </div>
           </div>

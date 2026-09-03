@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.5 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.5_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.5_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.5.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.6 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.6_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.6_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.6.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,20 +74,19 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.5
+      - name: Update GitHub Release v1.13.0.6
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.5 (1:1 原版复刻模型组回退与用量版)
-          tag_name: v1.13.0.5
+          name: OpenMinis Windows v1.13.0.6 (纯净开箱状态 + 1:1 用量折叠详情 + 独立内置浏览器)
+          tag_name: v1.13.0.6
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.5 (1:1 原版复刻设置中心 + 模型组 Fallback + Token 用量统计)
+            ### 📦 OpenMinis for Windows v1.13.0.6 (纯净开箱状态 + 1:1 用量展开手风琴卡片 + 独立内置浏览器)
             > **⚠️ 备注：私人用极度不稳定 Aicoding 改**
             
-            - **1:1 原版设置架构 (对标截图 1000143310)**：大圆角 Grouped 卡片，完整导航 (管理提供商、模型组、Token用量、MCP、记忆、存储共享文件夹)
-            - **模型组与回退机制 (Fallback，对标截图 1000143328)**：支持配置 Primary 主力组与备选队列，主模型报错自动毫秒级平滑回退
-            - **Token 用量统计仪表盘 (对标截图 1000143344)**：总输入 (含缓存)、输出 Token、缓存读取、缓存命中率，各模型输入/输出消耗排行
-            - **AI 服务商分层管理 (对标截图 1000143326)**：绿色圆点状态、Key 脱敏、模型数统计、一键拉取模型池
-            - **会话主列表与右上角菜单 (对标截图 1000143307)**：马卡龙圆形图标徽章、按时间分段、右上角经典菜单
+            - **纯净开箱体验**：彻底移除所有硬编码预设数据（服务商、模型组、假 Token 统计、假模型池全部归零清空，等待用户配置）
+            - **1:1 原版用量详情展开 (对标截图 1000143557/1000143558)**：点击模型行平滑展开手风琴卡片，完整展示输入、输出、缓存读取、缓存命中率、日均、会话均值、会话数、活跃天数 8 大维度
+            - **独立内置浏览器 (脱离 WSL)**：右上角菜单「打开浏览器」直接唤出全功能内置 Webkit 浏览器窗口，支持自由输入网址浏览与刷新
+            - **浏览器设置解耦**：右上角菜单「浏览器设置」独立配置 User-Agent、自动化超时时间，不再误跳至全局设置
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
