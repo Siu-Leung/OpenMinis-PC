@@ -89,6 +89,5 @@ jobs:
             - **多供应商与偏好分离**：独立管理 OpenAI、DeepSeek、Claude、SiliconFlow、Ollama 等，各自独立 Base URL 与 Key
             - **MCP 扩展协议管理**：支持集成 Stdio / SSE 外部 MCP 服务与工具
           files: dist-artifacts/*
-          files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
