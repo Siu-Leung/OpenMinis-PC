@@ -76,6 +76,7 @@ interface InitStepPayload {
 
 export default function App() {
   const [sandboxReady, setSandboxReady] = useState<boolean>(true);
+  const [sandboxNeedRestart, setSandboxNeedRestart] = useState<boolean>(false);
   const [showInitModal, setShowInitModal] = useState<boolean>(false);
   const [initPercent, setInitPercent] = useState<number>(0);
   const [initCurrentText, setInitCurrentText] = useState<string>("准备中...");
@@ -161,7 +162,7 @@ export default function App() {
       setInitLogs(prev => [...prev, data.text]);
       if (data.done) {
         setSandboxReady(true);
-        setTimeout(() => setShowInitModal(false), 1200);
+        setSandboxNeedRestart(true);
       }
     });
 
@@ -608,8 +609,21 @@ export default function App() {
           </div>
         </header>
 
-        {/* 关键：未初始化沙箱时的极简优雅提示条 */}
-        {!sandboxReady && (
+        {/* 关键：沙箱配置与重启提示条 */}
+        {sandboxNeedRestart ? (
+          <div className="bg-[#1C1C1E] border-b border-[#2C2C2E] px-4 py-2 flex items-center justify-between text-xs z-10">
+            <div className="flex items-center gap-2 text-[#34C759]">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>WSL2 沙箱已完全配置成功，请重启软件以载入隔离环境</span>
+            </div>
+            <button
+              onClick={() => invoke("restart_app").catch(() => window.location.reload())}
+              className="bg-[#0A84FF] hover:bg-[#0071E3] text-white px-3.5 py-1 rounded-full font-medium transition flex items-center gap-1.5 shadow-sm"
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> 立即重启软件生效
+            </button>
+          </div>
+        ) : !sandboxReady && (
           <div className="bg-[#1C1C1E] border-b border-[#2C2C2E] px-4 py-2.5 flex items-center justify-between text-xs z-10">
             <div className="flex items-center gap-2 text-[#FF9F0A]">
               <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -858,6 +872,36 @@ export default function App() {
               </div>
             )}
 
+            {/* 成功后突出显示重启提示卡片 */}
+            {!initError && initPercent === 100 && (
+              <div className="p-4 bg-[#34C759]/10 border border-[#34C759]/30 rounded-2xl text-xs space-y-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-[#34C759]">
+                  <CheckCircle2 className="w-5 h-5 shrink-0" />
+                  <span>WSL2 独立沙箱已完全初始化成功！</span>
+                </div>
+                <p className="text-[#E5E5EA] leading-relaxed">
+                  已成功导入 Alpine 隔离沙箱并写入零信任宿主隔离规则 (/etc/wsl.conf)。为确保隔离策略、网络与环境变量完全生效，<strong>强烈建议重启软件</strong>。
+                </p>
+                <div className="text-[11px] text-[#8E8E93] bg-[#141416] p-2.5 rounded-xl border border-[#2C2C2E] leading-relaxed">
+                  💡 <strong>提示</strong>：如果您的 Windows 电脑是首次开启 WSL2 功能，重启软件后如遇任何沙箱连接异常，建议重启一次 Windows 计算机。
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    onClick={() => invoke("restart_app").catch(() => window.location.reload())}
+                    className="flex-1 py-2 rounded-xl bg-[#0A84FF] hover:bg-[#0071E3] text-white font-medium text-xs transition flex items-center justify-center gap-1.5 shadow-lg shadow-blue-500/20"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" /> 立即重启软件生效
+                  </button>
+                  <button
+                    onClick={() => setShowInitModal(false)}
+                    className="px-4 py-2 rounded-xl bg-[#2C2C2E] hover:bg-[#3A3A3C] text-[#8E8E93] hover:text-white text-xs transition"
+                  >
+                    稍后手动重启
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-end gap-2 pt-1">
               {initError ? (
                 <>
@@ -874,14 +918,7 @@ export default function App() {
                     <RefreshCw className="w-3.5 h-3.5" /> 重新尝试
                   </button>
                 </>
-              ) : initPercent === 100 ? (
-                <button
-                  onClick={() => setShowInitModal(false)}
-                  className="px-5 py-1.5 rounded-full bg-[#34C759] hover:bg-[#30B753] text-xs font-semibold text-white transition flex items-center gap-1.5"
-                >
-                  <CheckCircle2 className="w-4 h-4" /> 沙箱已就绪，开始使用
-                </button>
-              ) : (
+              ) : initPercent === 100 ? null : (
                 <div className="text-xs text-[#8E8E93] flex items-center gap-2 py-1">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>全自动部署中，无需任何手工操作...</span>

@@ -119,6 +119,11 @@ async fn terminate_sandbox(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
 // === 自动从供应商拉取可用模型列表 ===
 
 #[tauri::command]
@@ -310,6 +315,7 @@ fn main() {
             open_sandbox_dir,
             launch_interactive_terminal,
             terminate_sandbox,
+            restart_app,
             fetch_provider_models,
             // 会话管理与恢复
             list_sessions,
