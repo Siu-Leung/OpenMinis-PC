@@ -1,11 +1,12 @@
 // Prevents console window on Windows
 #![windows_subsystem = "windows"]
 
-//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动 + 一键沙箱初始化 + 自动拉取模型)
+//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动 + 一键沙箱初始化 + 自动拉取模型 + MCP 管理)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 mod agent;
 mod browser;
+mod mcp;
 mod memory;
 mod sandbox;
 mod scheduler;
@@ -14,6 +15,7 @@ mod tools;
 
 use agent::{AgentConfig, AgentEngine, ChatMessage};
 use browser::BrowserEngine;
+use mcp::{McpManager, McpServer};
 use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use sandbox::SandboxManager;
 use scheduler::{CronScheduler, ScheduledTask};
@@ -29,6 +31,7 @@ struct AppState {
     sessions: Arc<SessionStore>,
     scheduler: Arc<CronScheduler>,
     memory: Arc<MemoryStore>,
+    mcp: Arc<McpManager>,
 }
 
 // === 沙箱与 Agent 命令 ===
@@ -60,20 +63,13 @@ async fn upload_chat_attachment(
         &base64_data
     };
 
-    let b64 = raw_b64.replace('\r', "").replace('\n', "");
-    let safe_path = target_path.replace('\'', "'\\''");
-    let cmd = format!(
-        "mkdir -p \"$(dirname '{}')\" && echo '{}' | base64 -d > '{}'",
-        safe_path, b64, safe_path
-    );
+    let b64_clean = raw_b64.replace(['\r', '\n', ' '], "");
+    let bytes = sandbox::base64_decode(&b64_clean).map_err(|e| format!("Base64 解码失败: {}", e))?;
 
-    let res = state.sandbox.execute_shell(&cmd, 30).await?;
-    if res.exit_code == 0 {
-        let minis_url = format!("minis://{}/{}", if is_media { "attachments" } else { "workspace" }, clean_name);
-        Ok(minis_url)
-    } else {
-        Err(format!("保存附件失败: {}", res.stderr))
-    }
+    state.sandbox.write_sandbox_bytes(&target_path, &bytes, false).await?;
+
+    let minis_url = format!("minis://{}/{}", if is_media { "attachments" } else { "workspace" }, clean_name);
+    Ok(minis_url)
 }
 
 #[tauri::command]
@@ -94,7 +90,6 @@ async fn run_agent_turn(
     messages: Vec<ChatMessage>,
 ) -> Result<Vec<ChatMessage>, String> {
     let result = state.agent.run_turn_stream(&app, &config, messages).await;
-    // 自动保存会话正文与索引
     if let Ok(ref msgs) = result {
         if msgs.len() > 2 {
             let _ = state.sessions.save_session(session_id.as_deref(), msgs);
@@ -152,7 +147,6 @@ async fn fetch_provider_models(provider_url: String, api_key: String) -> Result<
             }
         }
         _ => {
-            // 备用 fallback: 直接 base/models
             let fallback_url = format!("{}/models", base);
             let mut req2 = client.get(&fallback_url);
             if !api_key.trim().is_empty() {
@@ -197,7 +191,29 @@ fn parse_models_json(json: &serde_json::Value) -> Result<Vec<String>, String> {
     }
 }
 
-// === 会话管理命令 (Hermes 跨会话恢复与全文检索) ===
+// === MCP (Model Context Protocol) 管理命令 ===
+
+#[tauri::command]
+async fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServer>, String> {
+    state.mcp.list_servers()
+}
+
+#[tauri::command]
+async fn add_mcp_server(state: State<'_, AppState>, server: McpServer) -> Result<(), String> {
+    state.mcp.add_server(server)
+}
+
+#[tauri::command]
+async fn remove_mcp_server(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.mcp.remove_server(&id)
+}
+
+#[tauri::command]
+async fn toggle_mcp_server(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.mcp.toggle_server(&id)
+}
+
+// === 会话管理命令 ===
 
 #[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<session::SessionRecord>, String> {
@@ -219,7 +235,7 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), St
     state.sessions.delete_session(&id)
 }
 
-// === 定时任务命令 (Hermes Cron 24/7 automation) ===
+// === 定时任务命令 ===
 
 #[tauri::command]
 async fn list_tasks(state: State<'_, AppState>) -> Result<Vec<ScheduledTask>, String> {
@@ -241,7 +257,7 @@ async fn toggle_task(state: State<'_, AppState>, id: String) -> Result<(), Strin
     state.scheduler.toggle_task(&id)
 }
 
-// === 记忆系统命令 (Hermes agent-curated memory) ===
+// === 记忆系统命令 ===
 
 #[tauri::command]
 async fn write_memory(
@@ -270,6 +286,7 @@ fn main() {
     let agent = Arc::new(AgentEngine::new(dispatcher.clone()));
     let sessions = Arc::new(SessionStore::new());
     let scheduler = Arc::new(CronScheduler::new());
+    let mcp = Arc::new(McpManager::new());
     let _ = memory.ensure_global_exists();
 
     let cron_scheduler_clone = scheduler.clone();
@@ -281,6 +298,7 @@ fn main() {
         sessions,
         scheduler,
         memory,
+        mcp,
     };
 
     tauri::Builder::default()
@@ -288,7 +306,6 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .setup(move |app| {
-            // 后台定时任务守护协程 (每 30 秒轮询)
             let handle = app.handle().clone();
             let sched = cron_scheduler_clone;
             tauri::async_runtime::spawn(async move {
@@ -317,6 +334,11 @@ fn main() {
             terminate_sandbox,
             restart_app,
             fetch_provider_models,
+            // MCP 管理
+            list_mcp_servers,
+            add_mcp_server,
+            remove_mcp_server,
+            toggle_mcp_server,
             // 会话管理与恢复
             list_sessions,
             get_session_messages,

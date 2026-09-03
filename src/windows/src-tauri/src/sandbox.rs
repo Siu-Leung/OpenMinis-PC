@@ -329,21 +329,62 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
         }
     }
 
-    /// 写入沙箱文件
-    pub async fn write_sandbox_file(&self, path: &str, content: &str, append: bool) -> Result<(), String> {
-        let b64 = base64_encode(content.as_bytes());
-        let op = if append { ">>" } else { ">" };
+    /// 写入沙箱文件数据 (流式写入与 UNC 宿主直写，突破任何命令行参数长度限制)
+    pub async fn write_sandbox_bytes(&self, path: &str, data: &[u8], append: bool) -> Result<(), String> {
+        // 方案 1: 尝试通过 Windows UNC 宿主文件系统直接秒级安全写入 (大文件零损耗)
+        let clean_path = path.trim_start_matches("/var/minis/").replace('/', "\\");
+        let unc_path = PathBuf::from(format!(r"\\wsl$\{}\var\minis\{}", self.distro_name, clean_path));
+        
+        if let Some(parent) = unc_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(append)
+            .truncate(!append)
+            .open(&unc_path)
+        {
+            use std::io::Write;
+            if file.write_all(data).is_ok() {
+                return Ok(());
+            }
+        }
+
+        // 方案 2: 降级通过 stdin 管道流式写入 (绝不拼接在命令行，支持任意尺寸文件)
         let safe_path = path.replace('\'', "'\\''");
-        let cmd = format!(
-            "mkdir -p \"$(dirname '{}')\" && echo '{}' | base64 -d {} '{}'",
-            safe_path, b64, op, safe_path
-        );
-        let (exit_code, _, stderr) = self.execute_raw_shell(&cmd, 20).await?;
-        if exit_code == 0 {
+        let op = if append { ">>" } else { ">" };
+        let sh_cmd = format!("mkdir -p \"$(dirname '{}')\" && cat {} '{}'", safe_path, op, safe_path);
+
+        let mut cmd = Self::silent_command("wsl");
+        cmd.args([
+            "-d", &self.distro_name,
+            "-u", "root",
+            "--exec", "/bin/sh", "-c", &sh_cmd
+        ]);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| format!("启动写入管道子进程失败: {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(data).await.map_err(|e| format!("向沙箱流式传输数据失败: {}", e))?;
+            stdin.flush().await.map_err(|e| format!("刷新沙箱管道失败: {}", e))?;
+        }
+
+        let out = child.wait_with_output().await.map_err(|e| format!("等待写入结束失败: {}", e))?;
+        if out.status.success() {
             Ok(())
         } else {
-            Err(format!("写入文件失败: {}", stderr))
+            Err(format!("写入沙箱文件失败: {}", String::from_utf8_lossy(&out.stderr)))
         }
+    }
+
+    /// 写入沙箱文本文件
+    pub async fn write_sandbox_file(&self, path: &str, content: &str, append: bool) -> Result<(), String> {
+        self.write_sandbox_bytes(path, content.as_bytes(), append).await
     }
 
     /// 唤起 Windows 原生交互式终端（此时正常显示终端窗口供输入 SSH 密码）
@@ -425,4 +466,34 @@ fn base64_encode(input: &[u8]) -> String {
         }
     }
     buf
+}
+
+pub fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    let mut table = [-1i8; 256];
+    let mut i = 0usize;
+    while i < 26 { table[(b'A' + i as u8) as usize] = i as i8; i += 1; }
+    i = 0;
+    while i < 26 { table[(b'a' + i as u8) as usize] = (26 + i) as i8; i += 1; }
+    i = 0;
+    while i < 10 { table[(b'0' + i as u8) as usize] = (52 + i) as i8; i += 1; }
+    table[b'+' as usize] = 62;
+    table[b'/' as usize] = 63;
+
+    let clean = input.trim().trim_end_matches('=');
+    let mut out = Vec::with_capacity((clean.len() * 3) / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+
+    for &b in clean.as_bytes() {
+        let val = table[b as usize];
+        if val < 0 { continue; }
+        buf = (buf << 6) | (val as u32);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Ok(out)
 }

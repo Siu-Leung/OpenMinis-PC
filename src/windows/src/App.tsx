@@ -16,17 +16,18 @@ import {
   RotateCcw,
   Check,
   Copy,
-  Clock,
   Brain,
   Globe,
   FileText,
   AlertTriangle,
   RefreshCw,
   X,
-  Paperclip,
-  Image as ImageIcon,
   CheckCircle2,
-  Loader2
+  Loader2,
+  Server,
+  Layers,
+  Sparkles,
+  Sliders
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -34,20 +35,32 @@ import remarkGfm from "remark-gfm";
 interface ChatMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
+  thinking?: string;
+  thinking_duration?: number;
   tool_calls?: any;
   tool_call_id?: string;
   images?: string[];
-  files?: { name: string; url: string }[];
+  files?: { name: string; url: string; sizeStr?: string }[];
+}
+
+interface Provider {
+  id: string;
+  name: string;
+  provider_url: string;
+  api_key: string;
+  models: string[];
 }
 
 interface AgentConfig {
   provider_url: string;
   api_key: string;
   model: string;
+  thinking_level?: string; // "off" | "low" | "medium" | "high" | "max"
+  thinking_budget?: number;
 }
 
 interface StreamEvent {
-  event_type: "token" | "tool_start" | "tool_end" | "error";
+  event_type: "status" | "thinking" | "token" | "tool_start" | "tool_end" | "error";
   content: string;
 }
 
@@ -57,6 +70,16 @@ interface SessionRecord {
   created_at: string;
   message_count: number;
   preview: string;
+}
+
+interface McpServerItem {
+  id: string;
+  name: string;
+  server_type: string;
+  command_or_url: string;
+  enabled: boolean;
+  tools_count: number;
+  description?: string;
 }
 
 interface AttachmentItem {
@@ -74,7 +97,39 @@ interface InitStepPayload {
   done?: boolean;
 }
 
+const DEFAULT_PROVIDERS: Provider[] = [
+  {
+    id: "deepseek",
+    name: "DeepSeek (深度求索)",
+    provider_url: "https://api.deepseek.com",
+    api_key: "",
+    models: ["deepseek-chat", "deepseek-reasoner"]
+  },
+  {
+    id: "openai",
+    name: "OpenAI 官方",
+    provider_url: "https://api.openai.com/v1",
+    api_key: "",
+    models: ["gpt-4o", "gpt-4o-mini", "o3-mini"]
+  },
+  {
+    id: "siliconflow",
+    name: "硅基流动 (SiliconFlow)",
+    provider_url: "https://api.siliconflow.cn/v1",
+    api_key: "",
+    models: ["deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1"]
+  },
+  {
+    id: "ollama",
+    name: "本地 Ollama",
+    provider_url: "http://localhost:11434/v1",
+    api_key: "ollama",
+    models: ["qwen2.5:latest", "deepseek-r1:latest"]
+  }
+];
+
 export default function App() {
+  // 沙箱状态与向导
   const [sandboxReady, setSandboxReady] = useState<boolean>(true);
   const [sandboxNeedRestart, setSandboxNeedRestart] = useState<boolean>(false);
   const [showInitModal, setShowInitModal] = useState<boolean>(false);
@@ -83,69 +138,94 @@ export default function App() {
   const [initLogs, setInitLogs] = useState<string[]>([]);
   const [initError, setInitError] = useState<string | null>(null);
 
+  // 侧边栏与会话
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [sessionSearch, setSessionSearch] = useState("");
 
+  // 多供应商体系
+  const [providers, setProviders] = useState<Provider[]>(() => {
+    const saved = localStorage.getItem("openminis_providers_v2");
+    return saved ? JSON.parse(saved) : DEFAULT_PROVIDERS;
+  });
+  const [activeProviderId, setActiveProviderId] = useState<string>(() => {
+    return localStorage.getItem("openminis_active_provider_id") || "deepseek";
+  });
+  const [activeModel, setActiveModel] = useState<string>(() => {
+    return localStorage.getItem("openminis_active_model") || "deepseek-chat";
+  });
+  const [thinkingLevel, setThinkingLevel] = useState<string>(() => {
+    return localStorage.getItem("openminis_thinking_level") || "high";
+  });
+
+  // 对话状态流
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境，支持浏览器自动化、代码执行、文件分析与图片多模态。支持拖拽或粘贴图片/文件到输入框直接分析。"
+      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境。已支持多供应商管理、深度思考链模式、MCP 扩展与图文文件联合分析。随时提出要求！"
     }
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<"idle" | "connecting" | "thinking" | "answering">("idle");
   const [streamingText, setStreamingText] = useState("");
+  const [streamingThinking, setStreamingThinking] = useState("");
+  const [thinkingDuration, setThinkingDuration] = useState<number>(0);
   const [activeToolName, setActiveToolName] = useState<string | null>(null);
 
-  // 待发送附件列表 (支持多模态图片与文件)
+  // 输入框待发附件
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 折叠工具卡片状态
+  // 折叠卡片控制
+  const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<number, boolean>>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
-  // 顶部模型选择下拉菜单
+  // 模态弹窗控制
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [fetchingModels, setFetchingModels] = useState(false);
-
-  // 设置模态框
-  const [showSettings, setShowSettings] = useState(false);
-  const [config, setConfig] = useState<AgentConfig>(() => {
-    const saved = localStorage.getItem("openminis_config");
-    return saved ? JSON.parse(saved) : {
-      provider_url: "https://api.openai.com/v1",
-      api_key: "",
-      model: "gpt-4o"
-    };
-  });
-
-  // 会话列表
-  const [sessions, setSessions] = useState<SessionRecord[]>([]);
-  const [sessionSearch, setSessionSearch] = useState("");
-
-  // 记忆查看抽屉
+  const [showProvidersModal, setShowProvidersModal] = useState(false);
+  const [showMcpModal, setShowMcpModal] = useState(false);
+  const [showGeneralSettings, setShowGeneralSettings] = useState(false);
   const [showMemoryModal, setShowMemoryModal] = useState(false);
   const [memoryText, setMemoryText] = useState("");
 
+  // MCP 服务器列表
+  const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+
+  // 编辑供应商临时状态
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const thinkingTimerRef = useRef<any>(null);
+
+  // 当前激活的 Provider
+  const activeProvider = providers.find(p => p.id === activeProviderId) || providers[0];
 
   useEffect(() => {
     checkSandbox();
-
-    const cachedModels = localStorage.getItem("openminis_cached_models");
-    if (cachedModels) {
-      try { setAvailableModels(JSON.parse(cachedModels)); } catch (_) {}
-    }
-
     refreshSessions();
+    loadMcpServers();
 
     // 监听实时流式事件
     const unlistenStream = listen<StreamEvent>("agent-stream", (event) => {
       const payload = event.payload;
-      if (payload.event_type === "token") {
+      if (payload.event_type === "status") {
+        if (payload.content === "thinking") {
+          setAgentStatus("thinking");
+        } else if (payload.content === "answering") {
+          setAgentStatus("answering");
+        } else if (payload.content === "connecting") {
+          setAgentStatus("connecting");
+        }
+      } else if (payload.event_type === "thinking") {
+        setAgentStatus("thinking");
+        setStreamingThinking(prev => prev + payload.content);
+      } else if (payload.event_type === "token") {
+        setAgentStatus("answering");
         setStreamingText(prev => prev + payload.content);
       } else if (payload.event_type === "tool_start") {
         setActiveToolName(payload.content);
@@ -166,7 +246,6 @@ export default function App() {
       }
     });
 
-    // 监听沙箱初始化错误
     const unlistenInitErr = listen<string>("sandbox-init-error", (event) => {
       setInitError(event.payload);
       setInitLogs(prev => [...prev, `❌ 错误: ${event.payload}`]);
@@ -176,12 +255,64 @@ export default function App() {
       unlistenStream.then(un => un());
       unlistenInitStep.then(un => un());
       unlistenInitErr.then(un => un());
+      if (thinkingTimerRef.current) clearInterval(thinkingTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, activeToolName, attachments]);
+  }, [messages, streamingText, streamingThinking, activeToolName, agentStatus, attachments]);
+
+  // 思考计时器
+  useEffect(() => {
+    if (agentStatus === "thinking") {
+      const start = Date.now();
+      thinkingTimerRef.current = setInterval(() => {
+        setThinkingDuration(Math.round((Date.now() - start) / 100) / 10);
+      }, 100);
+    } else if (agentStatus !== "thinking" && thinkingTimerRef.current) {
+      clearInterval(thinkingTimerRef.current);
+    }
+  }, [agentStatus]);
+
+  const saveProviders = (newProviders: Provider[]) => {
+    setProviders(newProviders);
+    localStorage.setItem("openminis_providers_v2", JSON.stringify(newProviders));
+  };
+
+  const switchActiveProvider = (provId: string) => {
+    setActiveProviderId(provId);
+    localStorage.setItem("openminis_active_provider_id", provId);
+    const target = providers.find(p => p.id === provId);
+    if (target && target.models.length > 0) {
+      setActiveModel(target.models[0]);
+      localStorage.setItem("openminis_active_model", target.models[0]);
+    }
+  };
+
+  const switchActiveModel = (modelName: string) => {
+    setActiveModel(modelName);
+    localStorage.setItem("openminis_active_model", modelName);
+  };
+
+  const switchThinkingLevel = (level: string) => {
+    setThinkingLevel(level);
+    localStorage.setItem("openminis_thinking_level", level);
+  };
+
+  const loadMcpServers = async () => {
+    try {
+      const list = await invoke<McpServerItem[]>("list_mcp_servers");
+      setMcpServers(list);
+    } catch (_) {}
+  };
+
+  const handleToggleMcp = async (id: string) => {
+    try {
+      await invoke("toggle_mcp_server", { id });
+      loadMcpServers();
+    } catch (_) {}
+  };
 
   // 剪贴板图片粘贴 (Ctrl+V)
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -197,7 +328,7 @@ export default function App() {
     }
   };
 
-  // 拖拽文件进入聊天框
+  // 拖拽文件进入
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
@@ -246,7 +377,7 @@ export default function App() {
   const handleStartAutoInit = async () => {
     setShowInitModal(true);
     setInitPercent(5);
-    setInitCurrentText("正在准备沙箱配置环境...");
+    setInitCurrentText("准备沙箱配置环境...");
     setInitLogs(["正在启动 WSL2 Alpine 沙箱自动初始化..."]);
     setInitError(null);
 
@@ -258,29 +389,24 @@ export default function App() {
     }
   };
 
-  const handleFetchModels = async () => {
-    if (!config.provider_url) return;
+  const handleFetchModelsForProvider = async (targetProv: Provider) => {
+    if (!targetProv.provider_url) return;
     setFetchingModels(true);
     try {
       const list = await invoke<string[]>("fetch_provider_models", {
-        providerUrl: config.provider_url,
-        apiKey: config.api_key
+        providerUrl: targetProv.provider_url,
+        apiKey: targetProv.api_key
       });
-      setAvailableModels(list);
-      localStorage.setItem("openminis_cached_models", JSON.stringify(list));
-      if (list.length > 0 && !list.includes(config.model)) {
-        updateConfig({ ...config, model: list[0] });
+      const updated = providers.map(p => p.id === targetProv.id ? { ...p, models: list } : p);
+      saveProviders(updated);
+      if (targetProv.id === activeProviderId && list.length > 0) {
+        switchActiveModel(list[0]);
       }
     } catch (err: any) {
-      alert("获取模型失败: " + err);
+      alert("自动获取模型列表失败: " + err);
     } finally {
       setFetchingModels(false);
     }
-  };
-
-  const updateConfig = (newCfg: AgentConfig) => {
-    setConfig(newCfg);
-    localStorage.setItem("openminis_config", JSON.stringify(newCfg));
   };
 
   const refreshSessions = async () => {
@@ -315,29 +441,33 @@ export default function App() {
     setMessages([
       {
         role: "assistant",
-        content: "已开启新会话。随时输入文字、拖入文件或粘贴截图进行分析。"
+        content: "已开启新会话。支持拖拽文件或粘贴截图，随时下达指令。"
       }
     ]);
     setCurrentSessionId(null);
     setInput("");
     setAttachments([]);
+    setAgentStatus("idle");
+    setStreamingText("");
+    setStreamingThinking("");
   };
 
+  // 关键：图文与文件联合发送
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || loading) return;
-    if (!config.api_key) {
-      setShowSettings(true);
+    if (!activeProvider.api_key && activeProvider.id !== "ollama") {
+      setShowProvidersModal(true);
       return;
     }
 
     const currentAttachments = [...attachments];
-    setAttachments([]); // 清空输入栏待发附件
+    setAttachments([]); // 清空输入栏待发附件列表
 
-    // 1. 保存上传文件到沙箱并组装 Prompt 提示
     let promptText = input.trim();
     const uploadedImages: string[] = [];
-    const uploadedFiles: { name: string; url: string }[] = [];
+    const uploadedFiles: { name: string; url: string; sizeStr?: string }[] = [];
 
+    // 保存文件到沙箱 (流式写入，突破字符数限制)
     for (const att of currentAttachments) {
       try {
         const minisUrl = await invoke<string>("upload_chat_attachment", {
@@ -348,10 +478,10 @@ export default function App() {
 
         if (att.isMedia) {
           uploadedImages.push(att.dataUrl);
-          promptText += `\n\n[已就绪图片: ${minisUrl}]`;
+          promptText += `\n\n[附带图片: ${minisUrl}]`;
         } else {
-          uploadedFiles.push({ name: att.name, url: minisUrl });
-          promptText += `\n\n[已就绪文件: ${minisUrl} (大小: ${att.sizeStr})，可直接读取或用 Python 处理]`;
+          uploadedFiles.push({ name: att.name, url: minisUrl, sizeStr: att.sizeStr });
+          promptText += `\n\n[附带文件已就绪: ${minisUrl} (${att.sizeStr})，可直接读取或运行分析]`;
         }
       } catch (err: any) {
         console.error("上传附件失败:", err);
@@ -369,16 +499,26 @@ export default function App() {
     setMessages(nextHistory);
     setInput("");
     setLoading(true);
+    setAgentStatus("connecting");
     setStreamingText("");
+    setStreamingThinking("");
+    setThinkingDuration(0);
     setActiveToolName(null);
 
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
 
+    const currentConfig: AgentConfig = {
+      provider_url: activeProvider.provider_url,
+      api_key: activeProvider.api_key,
+      model: activeModel,
+      thinking_level: thinkingLevel,
+    };
+
     try {
       const updated = await invoke<ChatMessage[]>("run_agent_turn", {
-        config,
+        config: currentConfig,
         sessionId: currentSessionId,
         messages: nextHistory
       });
@@ -391,7 +531,9 @@ export default function App() {
       ]);
     } finally {
       setLoading(false);
+      setAgentStatus("idle");
       setStreamingText("");
+      setStreamingThinking("");
       setActiveToolName(null);
     }
   };
@@ -406,6 +548,10 @@ export default function App() {
     setExpandedTools(prev => ({ ...prev, [index]: !prev[index] }));
   };
 
+  const toggleThinkingExpand = (index: number) => {
+    setExpandedThinking(prev => ({ ...prev, [index]: !prev[index] }));
+  };
+
   const getToolDisplayInfo = (content: string) => {
     try {
       const parsed = JSON.parse(content);
@@ -416,7 +562,7 @@ export default function App() {
         return { label: "file_read", icon: FileText, color: "text-[#32ADE6]", detail: parsed.content };
       }
       if (parsed.minis_url !== undefined) {
-        return { label: "file_write", icon: FileText, color: "text-[#32ADE6]", detail: `写入成功: ${parsed.path}` };
+        return { label: "file_write", icon: FileText, color: "text-[#32ADE6]", detail: `已写入: ${parsed.path}` };
       }
       if (parsed.data !== undefined) {
         return { label: "browser_use", icon: Globe, color: "text-[#0A84FF]", detail: parsed.data };
@@ -431,7 +577,6 @@ export default function App() {
       onDragOver={e => e.preventDefault()}
       className="flex h-screen w-screen bg-[#000000] text-[#FFFFFF] font-sans antialiased overflow-hidden select-none"
     >
-      {/* 隐藏的文件上传 input */}
       <input
         ref={fileInputRef}
         type="file"
@@ -450,24 +595,26 @@ export default function App() {
       {sidebarOpen && (
         <aside className="w-[260px] h-full bg-[#000000] border-r border-[#1C1C1E] flex flex-col justify-between p-3 shrink-0 z-20">
           <div className="flex flex-col h-full min-h-0">
+            {/* 顶栏：Minis Title 与新对话 */}
             <div className="flex items-center justify-between px-2 py-1 mb-3">
               <span className="text-xs font-semibold tracking-wider text-[#8E8E93] uppercase">Minis</span>
               <button
                 onClick={handleNewChat}
                 className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#FFFFFF] hover:bg-[#1C1C1E] transition"
-                title="开启新对话"
+                title="开启新会话"
               >
                 <Plus className="w-4 h-4" />
               </button>
             </div>
 
+            {/* 会话搜索 */}
             <div className="relative mb-3 px-1">
               <Search className="w-3.5 h-3.5 text-[#636366] absolute left-3.5 top-2.5" />
               <input
                 type="text"
                 value={sessionSearch}
                 onChange={e => setSessionSearch(e.target.value)}
-                placeholder="搜索历史会话..."
+                placeholder="搜索会话..."
                 className="w-full bg-[#1C1C1E] border border-[#2C2C2E] rounded-xl pl-8 pr-3 py-1.5 text-xs text-[#FFFFFF] placeholder-[#636366] focus:outline-none focus:border-[#3A3A3C] transition"
               />
             </div>
@@ -497,13 +644,35 @@ export default function App() {
                 ))}
             </div>
 
-            {/* 底部原生功能按钮 */}
+            {/* 底部功能菜单：清晰分离 供应商管理 与 通用设置 */}
             <div className="border-t border-[#1C1C1E] pt-3 mt-2 space-y-1 px-1">
+              <button
+                onClick={() => setShowProvidersModal(true)}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs text-[#8E8E93] hover:bg-[#1C1C1E] hover:text-[#FFFFFF] transition"
+              >
+                <div className="flex items-center gap-2.5 truncate">
+                  <Server className="w-3.5 h-3.5 text-[#0A84FF]" />
+                  <span className="truncate">{activeProvider.name}</span>
+                </div>
+                <span className="text-[10px] text-[#636366] font-mono shrink-0">供应商</span>
+              </button>
+
+              <button
+                onClick={() => setShowMcpModal(true)}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs text-[#8E8E93] hover:bg-[#1C1C1E] hover:text-[#FFFFFF] transition"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Layers className="w-3.5 h-3.5 text-[#BF5AF2]" />
+                  <span>MCP 工具集</span>
+                </div>
+                <span className="text-[10px] text-[#636366]">{mcpServers.filter(s => s.enabled).length} 已启用</span>
+              </button>
+
               <button
                 onClick={() => invoke("open_sandbox_dir").catch(e => alert(e))}
                 className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-[#8E8E93] hover:bg-[#1C1C1E] hover:text-[#FFFFFF] transition"
               >
-                <ExternalLink className="w-3.5 h-3.5" /> 浏览沙箱目录
+                <ExternalLink className="w-3.5 h-3.5" /> 浏览沙箱文件
               </button>
 
               <button
@@ -514,29 +683,19 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => {
-                  invoke<string>("get_today_memory").then(t => setMemoryText(t)).catch(e => setMemoryText(e));
-                  setShowMemoryModal(true);
-                }}
+                onClick={() => setShowGeneralSettings(true)}
                 className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-[#8E8E93] hover:bg-[#1C1C1E] hover:text-[#FFFFFF] transition"
               >
-                <Brain className="w-3.5 h-3.5" /> 记忆系统
-              </button>
-
-              <button
-                onClick={() => setShowSettings(true)}
-                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-[#8E8E93] hover:bg-[#1C1C1E] hover:text-[#FFFFFF] transition"
-              >
-                <SettingsIcon className="w-3.5 h-3.5" /> 偏好设置
+                <SettingsIcon className="w-3.5 h-3.5" /> 通用偏好设置
               </button>
             </div>
           </div>
         </aside>
       )}
 
-      {/* ======================= 主工作区 ======================= */}
+      {/* ======================= 主对话区域 ======================= */}
       <main className="flex-1 flex flex-col h-full bg-[#000000] relative">
-        {/* 顶部极简导航栏 */}
+        {/* 顶部导航栏：模型胶囊与思考强度切换 */}
         <header className="h-[52px] border-b border-[#1C1C1E] flex items-center justify-between px-4 shrink-0 bg-[#000000]/80 backdrop-blur-md z-10">
           <div className="flex items-center gap-2">
             <button
@@ -548,48 +707,74 @@ export default function App() {
             </button>
           </div>
 
-          {/* 原版 Minis 核心：原生模型选择器胶囊 */}
+          {/* 顶栏中心：原版 Minis 模型与思考强度胶囊 */}
           <div className="relative">
             <button
               onClick={() => setShowModelPicker(!showModelPicker)}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1C1C1E] border border-[#2C2C2E] hover:border-[#3A3A3C] text-xs font-medium text-[#FFFFFF] transition shadow-sm"
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#1C1C1E] border border-[#2C2C2E] hover:border-[#3A3A3C] text-xs font-medium text-[#FFFFFF] transition shadow-sm"
             >
-              <span className="truncate max-w-[180px]">{config.model || "选择模型"}</span>
+              {thinkingLevel !== "off" && (
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#0A84FF]/20 text-[#0A84FF] font-mono">
+                  🧠 {thinkingLevel.toUpperCase()}
+                </span>
+              )}
+              <span className="truncate max-w-[180px]">{activeModel || "选择模型"}</span>
               <ChevronDown className="w-3 h-3 text-[#8E8E93]" />
             </button>
 
-            {/* 模型下拉菜单 */}
+            {/* 模型与思考强度下拉 */}
             {showModelPicker && (
-              <div className="absolute top-10 left-1/2 -translate-x-1/2 w-64 bg-[#1C1C1E] border border-[#2C2C2E] rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in zoom-in-95 duration-100">
-                <div className="flex items-center justify-between px-2 py-1.5 border-b border-[#2C2C2E] mb-1">
-                  <span className="text-[11px] font-semibold text-[#8E8E93]">可用模型</span>
+              <div className="absolute top-10 left-1/2 -translate-x-1/2 w-72 bg-[#1C1C1E] border border-[#2C2C2E] rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in zoom-in-95 duration-100">
+                {/* 思考强度调节 */}
+                <div className="px-2 py-1.5 border-b border-[#2C2C2E] mb-2 space-y-1.5">
+                  <div className="text-[11px] font-semibold text-[#8E8E93] flex items-center gap-1">
+                    <Sliders className="w-3 h-3" /> 思考模式强度
+                  </div>
+                  <div className="flex rounded-lg bg-[#141416] p-0.5 border border-[#2C2C2E] text-[10px]">
+                    {["off", "low", "medium", "high"].map(lvl => (
+                      <button
+                        key={lvl}
+                        onClick={() => switchThinkingLevel(lvl)}
+                        className={`flex-1 py-1 rounded-md capitalize transition ${
+                          thinkingLevel === lvl ? "bg-[#0A84FF] text-white font-medium" : "text-[#8E8E93] hover:text-white"
+                        }`}
+                      >
+                        {lvl === "off" ? "关闭" : lvl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 供应商与可用模型 */}
+                <div className="flex items-center justify-between px-2 py-1 border-b border-[#2C2C2E] mb-1">
+                  <span className="text-[11px] font-semibold text-[#8E8E93]">{activeProvider.name} 模型</span>
                   <button
-                    onClick={handleFetchModels}
+                    onClick={() => handleFetchModelsForProvider(activeProvider)}
                     disabled={fetchingModels}
                     className="text-[10px] text-[#0A84FF] hover:underline flex items-center gap-1"
                   >
                     <RefreshCw className={`w-3 h-3 ${fetchingModels ? "animate-spin" : ""}`} /> 刷新
                   </button>
                 </div>
-                <div className="max-h-60 overflow-y-auto space-y-0.5">
-                  {availableModels.length === 0 ? (
+                <div className="max-h-56 overflow-y-auto space-y-0.5">
+                  {activeProvider.models.length === 0 ? (
                     <div className="text-center py-4 text-xs text-[#636366]">
-                      暂无模型，请点击刷新自动拉取
+                      暂无模型，请点击上方刷新自动拉取
                     </div>
                   ) : (
-                    availableModels.map(m => (
+                    activeProvider.models.map(m => (
                       <button
                         key={m}
                         onClick={() => {
-                          updateConfig({ ...config, model: m });
+                          switchActiveModel(m);
                           setShowModelPicker(false);
                         }}
                         className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs truncate transition flex items-center justify-between ${
-                          config.model === m ? "bg-[#0A84FF] text-white" : "text-[#D1D1D6] hover:bg-[#2C2C2E]"
+                          activeModel === m ? "bg-[#0A84FF] text-white" : "text-[#D1D1D6] hover:bg-[#2C2C2E]"
                         }`}
                       >
                         <span className="truncate">{m}</span>
-                        {config.model === m && <Check className="w-3 h-3" />}
+                        {activeModel === m && <Check className="w-3 h-3" />}
                       </button>
                     ))
                   )}
@@ -609,18 +794,18 @@ export default function App() {
           </div>
         </header>
 
-        {/* 关键：沙箱配置与重启提示条 */}
+        {/* 顶部沙箱提示条 */}
         {sandboxNeedRestart ? (
           <div className="bg-[#1C1C1E] border-b border-[#2C2C2E] px-4 py-2 flex items-center justify-between text-xs z-10">
             <div className="flex items-center gap-2 text-[#34C759]">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>WSL2 沙箱已完全配置成功，请重启软件以载入隔离环境</span>
+              <span>沙箱已配置成功，重启软件后完全载入隔离环境</span>
             </div>
             <button
               onClick={() => invoke("restart_app").catch(() => window.location.reload())}
-              className="bg-[#0A84FF] hover:bg-[#0071E3] text-white px-3.5 py-1 rounded-full font-medium transition flex items-center gap-1.5 shadow-sm"
+              className="bg-[#0A84FF] hover:bg-[#0071E3] text-white px-3 py-1 rounded-full font-medium transition flex items-center gap-1"
             >
-              <RotateCcw className="w-3.5 h-3.5" /> 立即重启软件生效
+              <RotateCcw className="w-3 h-3" /> 立即重启生效
             </button>
           </div>
         ) : !sandboxReady && (
@@ -638,13 +823,13 @@ export default function App() {
           </div>
         )}
 
-        {/* ======================= 对话消息流 (1:1 原版排版) ======================= */}
+        {/* ======================= 对话消息流 ======================= */}
         <div className="flex-1 overflow-y-auto px-4 py-6">
           <div className="max-w-3xl mx-auto space-y-6">
             {messages.map((msg, i) => {
               if (msg.role === "system") return null;
 
-              // 工具调用结果展示：1:1 原版 Minis ToolCapsuleView
+              // 工具调用胶囊
               if (msg.role === "tool") {
                 const info = getToolDisplayInfo(msg.content);
                 const IconComponent = info.icon;
@@ -677,26 +862,27 @@ export default function App() {
                 );
               }
 
-              // 用户消息：纯正 iOS 气泡 (右对齐，无头像，支持图片与文件缩略)
+              // 用户消息：支持多图与文件胶囊
               if (msg.role === "user") {
                 return (
                   <div key={i} className="flex flex-col items-end space-y-2">
-                    {/* 用户附带的图片预览 */}
+                    {/* 附带图片网格 */}
                     {msg.images && msg.images.length > 0 && (
                       <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
                         {msg.images.map((img, idx) => (
-                          <img key={idx} src={img} alt="upload" className="max-h-56 max-w-sm rounded-xl border border-[#2C2C2E] object-cover" />
+                          <img key={idx} src={img} alt="upload" className="max-h-56 max-w-sm rounded-xl border border-[#2C2C2E] object-cover shadow-sm" />
                         ))}
                       </div>
                     )}
 
-                    {/* 用户附带的文件标签 */}
+                    {/* 附带文件胶囊 */}
                     {msg.files && msg.files.length > 0 && (
                       <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
                         {msg.files.map((f, idx) => (
                           <div key={idx} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1C1C1E] border border-[#2C2C2E] text-xs text-[#D1D1D6]">
                             <FileText className="w-3.5 h-3.5 text-[#32ADE6]" />
                             <span>{f.name}</span>
+                            {f.sizeStr && <span className="text-[#8E8E93] text-[10px]">({f.sizeStr})</span>}
                           </div>
                         ))}
                       </div>
@@ -709,9 +895,29 @@ export default function App() {
                 );
               }
 
-              // 助手消息：直接左对齐纯净文字排版 (无机器人头像！)
+              // 助手消息：原生左对齐排版 + 思考链折叠块
               return (
                 <div key={i} className="flex flex-col space-y-2 text-[#E5E5EA] text-[15px] leading-relaxed select-text">
+                  {/* 历史思考链折叠卡片 */}
+                  {msg.thinking && (
+                    <div className="mb-1">
+                      <div
+                        onClick={() => toggleThinkingExpand(i)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#141416] border border-[#2C2C2E] hover:border-[#38383A] text-xs text-[#8E8E93] cursor-pointer transition select-none"
+                      >
+                        <Brain className="w-3.5 h-3.5 text-[#0A84FF]" />
+                        <span>已思考 {msg.thinking_duration ? `${msg.thinking_duration.toFixed(1)} 秒` : ""}</span>
+                        {expandedThinking[i] ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                      </div>
+
+                      {expandedThinking[i] && (
+                        <div className="mt-2 p-3.5 rounded-2xl bg-[#141416] border border-[#2C2C2E] text-xs font-mono text-[#8E8E93] leading-relaxed whitespace-pre-wrap selection:bg-[#2C2C2E]">
+                          {msg.thinking}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="prose prose-invert max-w-none text-sm leading-relaxed">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {msg.content}
@@ -721,7 +927,20 @@ export default function App() {
               );
             })}
 
-            {/* 流式打字机响应 */}
+            {/* 正在思考中实时流 (Thinking Block) */}
+            {loading && streamingThinking && (
+              <div className="flex flex-col space-y-2 text-[#8E8E93]">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#141416] border border-[#0A84FF]/40 text-xs text-[#0A84FF] animate-pulse">
+                  <Brain className="w-3.5 h-3.5 animate-spin" />
+                  <span>正在深度思考 ({thinkingDuration.toFixed(1)}s)...</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-[#141416] border border-[#2C2C2E] text-xs font-mono text-[#8E8E93] leading-relaxed whitespace-pre-wrap">
+                  {streamingThinking}
+                </div>
+              </div>
+            )}
+
+            {/* 正文流式打字机 */}
             {loading && streamingText && (
               <div className="flex flex-col space-y-2 text-[#E5E5EA] text-[15px] leading-relaxed select-text">
                 <div className="prose prose-invert max-w-none text-sm leading-relaxed">
@@ -732,7 +951,18 @@ export default function App() {
               </div>
             )}
 
-            {/* 工具正在调用中状态 */}
+            {/* 动态回复中 / 输入中状态指示器 (用户明确要求) */}
+            {loading && agentStatus === "connecting" && !streamingText && !streamingThinking && (
+              <div className="flex items-center gap-2 text-xs text-[#8E8E93] py-2">
+                <div className="flex gap-1 items-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#0A84FF] animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#0A84FF] animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#0A84FF] animate-bounce" style={{ animationDelay: "300ms" }} />
+                </div>
+                <span>Minis 正在分析请求...</span>
+              </div>
+            )}
+
             {loading && activeToolName && (
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#141416] border border-[#2C2C2E] text-[11px] text-[#8E8E93] animate-pulse">
                 <Terminal className="w-3 h-3 text-[#34C759] animate-spin" />
@@ -744,11 +974,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* ======================= 原版 Minis 标志性胶囊输入栏 (支持附件与图片) ======================= */}
+        {/* ======================= 原版 Minis 标志性胶囊输入栏 (图文混排) ======================= */}
         <div className="p-4 shrink-0 bg-gradient-to-t from-[#000000] via-[#000000] to-transparent">
           <div className="max-w-3xl mx-auto bg-[#1C1C1E] border border-[#2C2C2E] rounded-[24px] px-3.5 py-2 flex flex-col gap-2 focus-within:border-[#3A3A3C] transition shadow-xl">
             
-            {/* 上方附件暂存预览条 */}
+            {/* 上方附件暂存预览条 (可点 ✕ 删除，文字与附件共存) */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pt-1 border-b border-[#2C2C2E] pb-2">
                 {attachments.map(att => (
@@ -781,7 +1011,7 @@ export default function App() {
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="w-7 h-7 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-white hover:bg-[#2C2C2E] transition shrink-0 mb-0.5"
-                title="上传文件或图片 (也支持直接拖拽或 Ctrl+V 粘贴截图)"
+                title="上传文件或图片 (支持多选、拖拽或直接按 Ctrl+V 粘贴截图)"
               >
                 <Plus className="w-4 h-4" />
               </button>
@@ -802,11 +1032,11 @@ export default function App() {
                     handleSend();
                   }
                 }}
-                placeholder={attachments.length > 0 ? "输入对已选文件的要求..." : "发送消息、粘贴截图 (Ctrl+V) 或拖拽文件..."}
+                placeholder={attachments.length > 0 ? "输入对上述文件的分析要求..." : "发送消息、粘贴截图 (Ctrl+V) 或拖入文件..."}
                 className="flex-1 bg-transparent border-none text-sm text-[#FFFFFF] placeholder-[#636366] focus:outline-none resize-none max-h-40 py-1"
               />
 
-              {/* 原版 Minis 经典圆钮发送键 (arrow.up.circle.fill 质感) */}
+              {/* 原版圆钮发送键 (arrow.up.circle.fill) */}
               <button
                 onClick={handleSend}
                 disabled={loading || (!input.trim() && attachments.length === 0)}
@@ -823,7 +1053,232 @@ export default function App() {
         </div>
       </main>
 
-      {/* ======================= 可视化沙箱配置与排查中心 (绝不静默吞错误) ======================= */}
+      {/* ======================= 多供应商管理模态框 (Providers Modal) ======================= */}
+      {showProvidersModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-xl rounded-2xl p-6 shadow-2xl space-y-5 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-[#2C2C2E]">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Server className="w-4 h-4 text-[#0A84FF]" />
+                <span>AI 供应商配置管理</span>
+              </div>
+              <button onClick={() => setShowProvidersModal(false)} className="text-[#8E8E93] hover:text-white text-xs">✕</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+              {providers.map(p => {
+                const isActive = p.id === activeProviderId;
+                return (
+                  <div
+                    key={p.id}
+                    className={`p-4 rounded-xl border transition ${
+                      isActive ? "bg-[#141416] border-[#0A84FF]" : "bg-[#141416]/60 border-[#2C2C2E]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-xs text-white">{p.name}</span>
+                        {isActive && (
+                          <span className="text-[10px] bg-[#0A84FF]/20 text-[#0A84FF] px-2 py-0.5 rounded-full font-medium">
+                            当前主力
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {!isActive && (
+                          <button
+                            onClick={() => switchActiveProvider(p.id)}
+                            className="text-xs text-[#0A84FF] hover:underline"
+                          >
+                            设为当前
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleFetchModelsForProvider(p)}
+                          disabled={fetchingModels}
+                          className="text-xs text-[#8E8E93] hover:text-white flex items-center gap-1"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${fetchingModels ? "animate-spin" : ""}`} /> 自动拉取模型
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 text-xs">
+                      <div>
+                        <label className="block text-[11px] text-[#8E8E93] mb-0.5">Base URL</label>
+                        <input
+                          type="text"
+                          value={p.provider_url}
+                          onChange={e => {
+                            const updated = providers.map(item => item.id === p.id ? { ...item, provider_url: e.target.value } : item);
+                            saveProviders(updated);
+                          }}
+                          className="w-full bg-[#1C1C1E] border border-[#2C2C2E] rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-[#0A84FF]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-[#8E8E93] mb-0.5">API Key</label>
+                        <input
+                          type="password"
+                          value={p.api_key}
+                          onChange={e => {
+                            const updated = providers.map(item => item.id === p.id ? { ...item, api_key: e.target.value } : item);
+                            saveProviders(updated);
+                          }}
+                          placeholder="sk-..."
+                          className="w-full bg-[#1C1C1E] border border-[#2C2C2E] rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-[#0A84FF]"
+                        />
+                      </div>
+                      <div className="text-[11px] text-[#8E8E93]">
+                        可用模型: <span className="text-white">{p.models.join(", ") || "未拉取，请点击右上角自动拉取"}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-between items-center pt-2 border-t border-[#2C2C2E]">
+              <button
+                onClick={() => {
+                  const newId = `custom-${Date.now().toString(36)}`;
+                  const newP: Provider = {
+                    id: newId,
+                    name: "自定义供应商",
+                    provider_url: "https://api.example.com/v1",
+                    api_key: "",
+                    models: []
+                  };
+                  saveProviders([...providers, newP]);
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-[#2C2C2E] hover:bg-[#38383A] text-xs text-white transition flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> 添加新供应商
+              </button>
+              <button
+                onClick={() => setShowProvidersModal(false)}
+                className="px-5 py-1.5 rounded-full bg-[#0A84FF] hover:bg-[#0071E3] text-xs font-semibold text-white transition"
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================= MCP 扩展服务管理模态框 ======================= */}
+      {showMcpModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-xl rounded-2xl p-6 shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-[#2C2C2E]">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Layers className="w-4 h-4 text-[#BF5AF2]" />
+                <span>MCP (Model Context Protocol) 扩展协议</span>
+              </div>
+              <button onClick={() => setShowMcpModal(false)} className="text-[#8E8E93] hover:text-white text-xs">✕</button>
+            </div>
+
+            <div className="text-xs text-[#8E8E93] leading-relaxed">
+              支持连接外部 MCP 服务器（通过 Stdio 或 HTTP/SSE 协议），模型将自动识别并调用其注册的专业 Tools。
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {mcpServers.map(s => (
+                <div key={s.id} className="p-3.5 bg-[#141416] border border-[#2C2C2E] rounded-xl flex items-center justify-between">
+                  <div className="flex-1 min-w-0 pr-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-xs text-white truncate">{s.name}</span>
+                      <span className="text-[10px] bg-[#2C2C2E] text-[#D1D1D6] px-1.5 py-0.2 rounded font-mono uppercase">
+                        {s.server_type}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-[#8E8E93] truncate font-mono mt-1">{s.command_or_url}</div>
+                    {s.description && <div className="text-[10px] text-[#636366] mt-0.5">{s.description}</div>}
+                  </div>
+                  <button
+                    onClick={() => handleToggleMcp(s.id)}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                      s.enabled ? "bg-[#34C759]/20 text-[#34C759] border border-[#34C759]/40" : "bg-[#2C2C2E] text-[#8E8E93]"
+                    }`}
+                  >
+                    {s.enabled ? "已启用" : "已停用"}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-[#2C2C2E]">
+              <button
+                onClick={() => setShowMcpModal(false)}
+                className="px-5 py-1.5 rounded-full bg-[#0A84FF] hover:bg-[#0071E3] text-xs font-semibold text-white transition"
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================= 通用偏好设置模态框 ======================= */}
+      {showGeneralSettings && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#2C2C2E]">
+              <h2 className="text-sm font-semibold text-white">通用偏好设置</h2>
+              <button onClick={() => setShowGeneralSettings(false)} className="text-[#8E8E93] hover:text-white text-xs">✕</button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3 rounded-xl bg-[#141416] border border-[#2C2C2E] space-y-2">
+                <div className="font-semibold text-white">WSL2 沙箱资源管理</div>
+                <div className="text-[#8E8E93] text-[11px] leading-relaxed">
+                  沙箱闲置时内存会自动回收。如需彻底释放，可点击立即挂起沙箱。
+                </div>
+                <button
+                  onClick={async () => {
+                    await invoke("terminate_sandbox");
+                    alert("已挂起沙箱并彻底释放全部系统内存！下次执行时将自动唤醒。");
+                  }}
+                  className="w-full py-1.5 rounded-lg bg-[#2C2C2E] hover:bg-[#38383A] text-white text-xs transition"
+                >
+                  立即挂起沙箱释放内存
+                </button>
+              </div>
+
+              <div className="p-3 rounded-xl bg-[#141416] border border-[#2C2C2E] space-y-2">
+                <div className="font-semibold text-white">持久化记忆系统</div>
+                <div className="text-[#8E8E93] text-[11px] leading-relaxed">
+                  跨会话沉淀事实与用户偏好。支持查看今日记忆库。
+                </div>
+                <button
+                  onClick={() => {
+                    invoke<string>("get_today_memory").then(t => setMemoryText(t)).catch(e => setMemoryText(e));
+                    setShowMemoryModal(true);
+                  }}
+                  className="w-full py-1.5 rounded-lg bg-[#2C2C2E] hover:bg-[#38383A] text-white text-xs transition"
+                >
+                  查看今日记忆日志 (YYYY-MM-DD.md)
+                </button>
+              </div>
+
+              <div className="text-[11px] text-[#636366] text-center pt-2">
+                OpenMinis for Windows · v1.13.0.2 (完全加固原生版)
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-[#2C2C2E]">
+              <button
+                onClick={() => setShowGeneralSettings(false)}
+                className="px-5 py-1.5 rounded-full bg-[#0A84FF] hover:bg-[#0071E3] text-xs font-semibold text-white transition"
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================= 可视化沙箱向导模态框 ======================= */}
       {showInitModal && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-lg rounded-2xl p-6 shadow-2xl space-y-5">
@@ -837,7 +1292,6 @@ export default function App() {
               )}
             </div>
 
-            {/* 动态进度条 */}
             <div className="space-y-2">
               <div className="flex justify-between text-xs text-[#8E8E93]">
                 <span>{initCurrentText}</span>
@@ -851,7 +1305,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* 执行日志流 */}
             <div className="bg-[#141416] border border-[#2C2C2E] rounded-xl p-3 h-44 overflow-y-auto font-mono text-[11px] text-[#A1A1A6] space-y-1">
               {initLogs.map((log, i) => (
                 <div key={i} className="leading-relaxed">
@@ -859,18 +1312,6 @@ export default function App() {
                 </div>
               ))}
             </div>
-
-            {/* 错误提示与重试 */}
-            {initError && (
-              <div className="p-3 bg-[#FF453A]/10 border border-[#FF453A]/30 rounded-xl text-xs text-[#FF453A] space-y-2">
-                <div className="font-semibold flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4" /> 配置遇到问题
-                </div>
-                <div className="text-[11px] leading-relaxed text-[#FFD60A] font-mono whitespace-pre-wrap">
-                  {initError}
-                </div>
-              </div>
-            )}
 
             {/* 成功后突出显示重启提示卡片 */}
             {!initError && initPercent === 100 && (
@@ -924,71 +1365,6 @@ export default function App() {
                   <span>全自动部署中，无需任何手工操作...</span>
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ======================= 设置模态框 (iOS 质感) ======================= */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-md rounded-2xl p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-[#2C2C2E]">
-              <h2 className="text-sm font-semibold text-white">模型服务商配置</h2>
-              <button onClick={() => setShowSettings(false)} className="text-[#8E8E93] hover:text-white text-xs">✕</button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block text-[#8E8E93] mb-1">API Base URL</label>
-                <input
-                  type="text"
-                  value={config.provider_url}
-                  onChange={e => updateConfig({ ...config, provider_url: e.target.value })}
-                  placeholder="https://api.openai.com/v1"
-                  className="w-full bg-[#141416] border border-[#2C2C2E] rounded-xl px-3 py-2 text-[#FFFFFF] focus:outline-none focus:border-[#0A84FF]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[#8E8E93] mb-1">API Key</label>
-                <input
-                  type="password"
-                  value={config.api_key}
-                  onChange={e => updateConfig({ ...config, api_key: e.target.value })}
-                  placeholder="sk-..."
-                  className="w-full bg-[#141416] border border-[#2C2C2E] rounded-xl px-3 py-2 text-[#FFFFFF] font-mono focus:outline-none focus:border-[#0A84FF]"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[#8E8E93]">当前生效模型</label>
-                  <button
-                    onClick={handleFetchModels}
-                    disabled={fetchingModels}
-                    className="text-[#0A84FF] hover:underline flex items-center gap-1 text-[11px]"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${fetchingModels ? "animate-spin" : ""}`} /> 自动拉取列表
-                  </button>
-                </div>
-                <input
-                  type="text"
-                  value={config.model}
-                  onChange={e => updateConfig({ ...config, model: e.target.value })}
-                  placeholder="gpt-4o, claude-3-5-sonnet..."
-                  className="w-full bg-[#141416] border border-[#2C2C2E] rounded-xl px-3 py-2 text-[#FFFFFF] focus:outline-none focus:border-[#0A84FF]"
-                />
-              </div>
-            </div>
-
-            <div className="pt-2 flex justify-end">
-              <button
-                onClick={() => setShowSettings(false)}
-                className="bg-[#0A84FF] hover:bg-[#0071E3] text-white px-4 py-1.5 rounded-full text-xs font-medium transition"
-              >
-                完成
-              </button>
             </div>
           </div>
         </div>

@@ -1,4 +1,4 @@
-//! OpenMinis Windows Agent Loop 核心逻辑 (完全加固与 System Prompt 注入版)
+//! OpenMinis Windows Agent Loop 核心逻辑 (完整思考模式与状态流式解析版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use crate::tools::ToolDispatcher;
@@ -6,6 +6,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 const SYSTEM_PROMPT: &str = r#"You are OpenMinis, a capable AI assistant running on a Windows PC with an isolated Alpine Linux sandbox (WSL2, BusyBox ash).
@@ -45,9 +46,17 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,11 +65,13 @@ pub struct AgentConfig {
     pub api_key: String,
     pub model: String,
     pub system_prompt: Option<String>,
+    pub thinking_level: Option<String>, // "off" | "low" | "medium" | "high" | "max"
+    pub thinking_budget: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamEvent {
-    pub event_type: String, // "token" | "tool_start" | "tool_end" | "error"
+    pub event_type: String, // "status" | "thinking" | "token" | "tool_start" | "tool_end" | "error"
     pub content: String,
 }
 
@@ -83,44 +94,82 @@ impl AgentEngine {
         }
     }
 
-    /// 执行一轮 Agent 对话与工具调度 (带并发互斥锁、死循环探测与 System Prompt 注入)
+    /// 执行一轮 Agent 对话与工具调度 (带思考链流式解析、强度控制与时序合规)
     pub async fn run_turn_stream(
         &self,
         app: &AppHandle,
         config: &AgentConfig,
         mut history: Vec<ChatMessage>,
     ) -> Result<Vec<ChatMessage>, String> {
-        // 0. 并发互斥锁：确保同一时刻只有一个 Agent Turn 在调度，彻底杜绝多请求 Token 串流打架
         let _guard = self.execution_lock.lock().await;
 
         let tools_schema = self.get_tools_schema();
 
-        // 1. 确保头部注入了系统级 System Prompt (支持动态替换子角色 System Prompt)
+        // 1. 注入或更新 System Prompt
         if history.is_empty() || history[0].role != "system" {
             let custom_sp = config.system_prompt.as_deref().unwrap_or(SYSTEM_PROMPT);
             history.insert(0, ChatMessage {
                 role: "system".to_string(),
                 content: custom_sp.to_string(),
+                thinking: None,
+                thinking_duration: None,
                 tool_calls: None,
                 tool_call_id: None,
+                images: None,
+                files: None,
             });
         } else if let Some(custom_sp) = &config.system_prompt {
             history[0].content = custom_sp.clone();
         }
 
-        // 2. 死循环探测器记录：(tool_name, arguments_hash) -> 连续重复次数
         let mut last_call_signature = String::new();
         let mut repeat_call_count = 0;
         let max_total_tool_calls = 20usize;
         let mut total_tool_calls = 0usize;
 
         for _ in 0..10 {
-            let request_body = json!({
-                "model": config.model,
-                "messages": history,
-                "tools": tools_schema,
-                "stream": true,
-                "temperature": 0.7
+            // 构建请求 Body (支持思考模式与强度参数)
+            let mut request_map = serde_json::Map::new();
+            request_map.insert("model".to_string(), json!(config.model));
+            request_map.insert("messages".to_string(), json!(history));
+            request_map.insert("tools".to_string(), tools_schema.clone());
+            request_map.insert("stream".to_string(), json!(true));
+            request_map.insert("temperature".to_string(), json!(0.7));
+
+            // 根据思考模式配置注入参数 (兼容 OpenAI, DeepSeek, Qwen)
+            let thinking_mode = config.thinking_level.as_deref().unwrap_or("high");
+            if thinking_mode != "off" {
+                // OpenAI 格式: reasoning_effort ("low" | "medium" | "high")
+                let effort = match thinking_mode {
+                    "low" => "low",
+                    "medium" => "medium",
+                    _ => "high",
+                };
+                request_map.insert("reasoning_effort".to_string(), json!(effort));
+
+                // DeepSeek 格式
+                request_map.insert("thinking".to_string(), json!({ "type": "enabled" }));
+
+                // 通用 extra_body (Qwen/DashScope/vLLM)
+                let budget = config.thinking_budget.unwrap_or(match thinking_mode {
+                    "low" => 1024,
+                    "medium" => 4096,
+                    "max" => 16384,
+                    _ => 8192,
+                });
+                request_map.insert("extra_body".to_string(), json!({
+                    "enable_thinking": true,
+                    "thinking_budget": budget
+                }));
+            } else {
+                request_map.insert("thinking".to_string(), json!({ "type": "disabled" }));
+            }
+
+            let request_body = Value::Object(request_map);
+
+            let _ = app.emit("agent-stream", StreamEvent {
+                event_type: "status".to_string(),
+                content: "connecting".to_string(),
             });
 
             let resp = self
@@ -144,10 +193,13 @@ impl AgentEngine {
 
             let mut stream = resp.bytes_stream();
             let mut assistant_content = String::new();
+            let mut assistant_thinking = String::new();
             let mut tool_calls_map: std::collections::HashMap<usize, (String, String, String)> =
                 std::collections::HashMap::new();
 
             let mut buffer = String::new();
+            let turn_start_time = Instant::now();
+            let mut is_in_thinking_phase = false;
 
             let mut done = false;
             while !done {
@@ -174,7 +226,35 @@ impl AgentEngine {
                         if let Ok(val) = serde_json::from_str::<Value>(json_str) {
                             if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
                                 if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
+                                    // 1. 深度思考增量 (DeepSeek reasoning_content 或 OpenAI reasoning)
+                                    if let Some(reasoning_chunk) = delta
+                                        .get("reasoning_content")
+                                        .or_else(|| delta.get("reasoning"))
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        if !is_in_thinking_phase {
+                                            is_in_thinking_phase = true;
+                                            let _ = app.emit("agent-stream", StreamEvent {
+                                                event_type: "status".to_string(),
+                                                content: "thinking".to_string(),
+                                            });
+                                        }
+                                        assistant_thinking.push_str(reasoning_chunk);
+                                        let _ = app.emit("agent-stream", StreamEvent {
+                                            event_type: "thinking".to_string(),
+                                            content: reasoning_chunk.to_string(),
+                                        });
+                                    }
+
+                                    // 2. 正文内容增量
                                     if let Some(chunk_text) = delta.get("content").and_then(|v| v.as_str()) {
+                                        if is_in_thinking_phase {
+                                            is_in_thinking_phase = false;
+                                            let _ = app.emit("agent-stream", StreamEvent {
+                                                event_type: "status".to_string(),
+                                                content: "answering".to_string(),
+                                            });
+                                        }
                                         assistant_content.push_str(chunk_text);
                                         let _ = app.emit("agent-stream", StreamEvent {
                                             event_type: "token".to_string(),
@@ -182,6 +262,7 @@ impl AgentEngine {
                                         });
                                     }
 
+                                    // 3. 工具调用增量
                                     if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                                         for call in calls {
                                             let index = call.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -211,6 +292,23 @@ impl AgentEngine {
                 }
             }
 
+            // 处理 <think> 标签式思考 (MiniMax/开源模型)
+            if assistant_thinking.is_empty() && assistant_content.contains("<think>") {
+                if let Some(start) = assistant_content.find("<think>") {
+                    if let Some(end) = assistant_content.find("</think>") {
+                        let think_part = &assistant_content[start + 7..end];
+                        assistant_thinking = think_part.trim().to_string();
+                        assistant_content = assistant_content[end + 8..].trim().to_string();
+                    }
+                }
+            }
+
+            let thinking_duration = if !assistant_thinking.is_empty() {
+                Some(turn_start_time.elapsed().as_secs_f64())
+            } else {
+                None
+            };
+
             let mut final_tool_calls = Vec::new();
             let mut sorted_indices: Vec<_> = tool_calls_map.keys().copied().collect();
             sorted_indices.sort();
@@ -237,25 +335,28 @@ impl AgentEngine {
             history.push(ChatMessage {
                 role: "assistant".to_string(),
                 content: assistant_content,
+                thinking: if assistant_thinking.is_empty() { None } else { Some(assistant_thinking) },
+                thinking_duration,
                 tool_calls: tool_calls_val.clone(),
                 tool_call_id: None,
+                images: None,
+                files: None,
             });
 
             if tool_calls_val.is_none() {
                 break;
             }
 
-            // 处理并执行工具调用
+            // 执行工具调用
             if let Some(calls) = tool_calls_val.and_then(|v| v.as_array().cloned()) {
                 for call in calls {
                     let call_id = call["id"].as_str().unwrap_or("").to_string();
                     let fn_name = call["function"]["name"].as_str().unwrap_or("");
                     let fn_args_str = call["function"]["arguments"].as_str().unwrap_or("{}");
 
-                    // 3. 死循环探测与熔断拦截
                     total_tool_calls += 1;
                     if total_tool_calls > max_total_tool_calls {
-                        let limit_err = "已达工具调用上限 (20次)，本轮自动终止。".to_string();
+                        let limit_err = "已达工具调用安全上限 (20次)，已自动终止。".to_string();
                         let _ = app.emit("agent-stream", StreamEvent {
                             event_type: "error".to_string(),
                             content: limit_err.clone(),
@@ -263,14 +364,22 @@ impl AgentEngine {
                         history.push(ChatMessage {
                             role: "tool".to_string(),
                             content: json!({ "error": limit_err }).to_string(),
+                            thinking: None,
+                            thinking_duration: None,
                             tool_calls: None,
                             tool_call_id: Some(call_id),
+                            images: None,
+                            files: None,
                         });
                         history.push(ChatMessage {
                             role: "assistant".to_string(),
                             content: "⚠️ 已达工具调用安全上限（20次），已自动终止后续工具调度。".to_string(),
+                            thinking: None,
+                            thinking_duration: None,
                             tool_calls: None,
                             tool_call_id: None,
+                            images: None,
+                            files: None,
                         });
                         return Ok(history);
                     }
@@ -292,14 +401,22 @@ impl AgentEngine {
                         history.push(ChatMessage {
                             role: "tool".to_string(),
                             content: json!({ "error": loop_err }).to_string(),
+                            thinking: None,
+                            thinking_duration: None,
                             tool_calls: None,
                             tool_call_id: Some(call_id),
+                            images: None,
+                            files: None,
                         });
                         history.push(ChatMessage {
                             role: "assistant".to_string(),
                             content: "⚠️ 检测到工具调用死循环，已启动安全熔断。请调整指令或参数重试。".to_string(),
+                            thinking: None,
+                            thinking_duration: None,
                             tool_calls: None,
                             tool_call_id: None,
+                            images: None,
+                            files: None,
                         });
                         return Ok(history);
                     }
@@ -308,21 +425,25 @@ impl AgentEngine {
 
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_start".to_string(),
-                        content: format!("正在调用工具: {} ...", fn_name),
+                        content: format!("正在调用: {}", fn_name),
                     });
 
                     let result = self.dispatcher.dispatch(fn_name, fn_args).await;
 
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_end".to_string(),
-                        content: format!("工具 {} 执行完毕", fn_name),
+                        content: format!("{} 执行完毕", fn_name),
                     });
 
                     history.push(ChatMessage {
                         role: "tool".to_string(),
                         content: result.to_string(),
+                        thinking: None,
+                        thinking_duration: None,
                         tool_calls: None,
                         tool_call_id: Some(call_id),
+                        images: None,
+                        files: None,
                     });
                 }
             }
