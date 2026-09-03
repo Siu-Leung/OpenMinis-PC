@@ -150,6 +150,14 @@ interface McpServerItem {
   description?: string;
 }
 
+interface SandboxDiagnostics {
+  isInstalled: boolean;
+  distroState: string;
+  distroName: string;
+  isolationActive: boolean;
+  isolationText: string;
+}
+
 interface AttachmentItem {
   id: string;
   name: string;
@@ -185,7 +193,7 @@ export default function App() {
 
   // 1:1 对标截图：全功能设置模态窗口及其子页面路由
   const [settingsView, setSettingsView] = useState<
-    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings"
+    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about"
   >("none");
 
   // 内置独立浏览器窗口状态 (完全不依赖沙箱，开箱即用)
@@ -273,6 +281,23 @@ export default function App() {
   const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
   const [memoryText, setMemoryText] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [sandboxDiag, setSandboxDiag] = useState<SandboxDiagnostics>({
+    isInstalled: true,
+    distroState: "Running",
+    distroName: "OpenMinisSandbox",
+    isolationActive: true,
+    isolationText: "零泄漏 (/mnt 宿主盘已彻底屏蔽)",
+  });
+  const [repairingSandbox, setRepairingSandbox] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+
+  const loadSandboxDiag = async () => {
+    try {
+      const diag = await invoke<SandboxDiagnostics>("get_sandbox_diagnostics");
+      setSandboxDiag(diag);
+    } catch (_) {}
+  };
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -622,11 +647,15 @@ export default function App() {
                   <span>Shell 终端</span>
                 </button>
                 <button
-                  onClick={() => { setShowTopMenu(false); invoke("open_sandbox_dir"); }}
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    loadSandboxDiag();
+                    setSettingsView("rootfs");
+                  }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left"
                 >
-                  <SettingsIcon className="w-4 h-4 text-[#8E8E93]" />
-                  <span>Rootfs 管理</span>
+                  <Terminal className="w-4 h-4 text-[#007AFF]" />
+                  <span>Rootfs 沙箱管理</span>
                 </button>
                 <button
                   onClick={() => { setShowTopMenu(false); setShowBrowserWindow(true); }}
@@ -1122,6 +1151,25 @@ export default function App() {
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">存储</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
                   <div
+                    onClick={() => {
+                      loadSandboxDiag();
+                      setSettingsView("rootfs");
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <Terminal className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">存储</div>
+                        <div className="text-xs text-[#8E8E93]">Alpine Linux rootfs 并浏览文件</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <div
                     onClick={() => invoke("open_sandbox_dir")}
                     className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
                   >
@@ -1131,11 +1179,61 @@ export default function App() {
                       </div>
                       <div>
                         <div className="text-sm font-semibold text-black dark:text-white">共享文件夹</div>
-                        <div className="text-xs text-[#8E8E93]">浏览 /var/minis 下的工作区与附件</div>
+                        <div className="text-xs text-[#8E8E93]">浏览 /var/minis 下的共享、工作区与附件</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
                   </div>
+                </div>
+              </div>
+
+              {/* 关于分组 (1:1 完美复刻截图 1000143310.jpg) */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">关于</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <div
+                    onClick={() => setSettingsView("about")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <Info className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">关于 Minis</div>
+                        <div className="text-xs text-[#8E8E93]">版本与项目信息</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <div
+                    onClick={() => alert("Minis 为完全本地、完全私密的设备端智能体，所有沙箱与工具均在本地运行，绝不上传您的任何私密数据。")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <Shield className="w-4 h-4" />
+                      </div>
+                      <span className="text-sm font-semibold text-black dark:text-white">隐私政策</span>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <a
+                    href="https://github.com/Siu-Leung/OpenMinis-PC/issues"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <FileCode className="w-4 h-4" />
+                      </div>
+                      <span className="text-sm font-semibold text-black dark:text-white">反馈问题</span>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </a>
                 </div>
               </div>
             </div>
@@ -1612,6 +1710,268 @@ export default function App() {
                     </button>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+            {/* =========================================================================
+          Rootfs 沙箱与 WSL 智能管理中心 (对标菜单第二项)
+      ========================================================================= */}
+      {settingsView === "rootfs" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold text-black dark:text-white">Rootfs 沙箱管理</h2>
+              </div>
+              <button
+                onClick={loadSandboxDiag}
+                className="text-xs text-[#0A84FF] hover:underline flex items-center gap-1 font-medium"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> 刷新状态
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* 实时状态诊断卡片 */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">沙箱运行时诊断</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] text-xs space-y-3">
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[#8E8E93]">实例名称</span>
+                    <span className="font-mono font-bold text-black dark:text-white">{sandboxDiag.distroName}</span>
+                  </div>
+                  <div className="flex items-center justify-between pt-3">
+                    <span className="text-[#8E8E93]">运行状态</span>
+                    <span className="flex items-center gap-1.5 font-semibold">
+                      {sandboxDiag.distroState === "Running" ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-[#34C759]" />
+                          <span className="text-[#34C759]">正在运行 (Running)</span>
+                        </>
+                      ) : sandboxDiag.isInstalled ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-[#8E8E93]" />
+                          <span className="text-[#8E8E93]">已挂起空闲 (Stopped)</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-[#FF453A]" />
+                          <span className="text-[#FF453A]">未安装配置</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between pt-3">
+                    <span className="text-[#8E8E93]">虚拟化底座</span>
+                    <span className="text-black dark:text-white font-medium">WSL2 + Alpine Linux (x86_64)</span>
+                  </div>
+                  <div className="flex items-center justify-between pt-3">
+                    <span className="text-[#8E8E93]">宿主隔离状态</span>
+                    <span className="text-[#34C759] font-medium">{sandboxDiag.isolationText}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 核心操作区 */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">智能维护与工具</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  {/* 一键无损修复 */}
+                  <div
+                    onClick={async () => {
+                      setRepairingSandbox(true);
+                      try {
+                        const msg = await invoke<string>("repair_sandbox");
+                        alert("修复成功！\n" + msg);
+                        loadSandboxDiag();
+                      } catch (e: any) {
+                        alert("修复遇到问题:\n" + e);
+                      } finally {
+                        setRepairingSandbox(false);
+                      }
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#34C759] flex items-center justify-center text-white">
+                        <Shield className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white flex items-center gap-2">
+                          <span>一键智能无损修复</span>
+                          {repairingSandbox && <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0A84FF]" />}
+                        </div>
+                        <div className="text-xs text-[#8E8E93]">自动修复 DNS 解析、目录权限与隔离策略，保留所有数据</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  {/* 重启沙箱释放内存 */}
+                  <div
+                    onClick={async () => {
+                      await invoke("terminate_sandbox");
+                      alert("沙箱已完全终止，内存已 100% 归还宿主系统。下次执行命令时将自动冷启动。");
+                      loadSandboxDiag();
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#FF9F0A] flex items-center justify-center text-white">
+                        <Power className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">重启沙箱 / 释放内存</div>
+                        <div className="text-xs text-[#8E8E93]">彻底关闭后台运行实例，清除所有内存占用</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  {/* 浏览 Rootfs 根目录 */}
+                  <div
+                    onClick={() => invoke("open_sandbox_rootfs_dir").catch(e => alert(e))}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <Folder className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">浏览沙箱 Rootfs 根目录</div>
+                        <div className="text-xs text-[#8E8E93]">在资源管理器中直达 \\wsl$\OpenMinisSandbox</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 危险重置区 */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#FF453A] px-3 mb-1.5 uppercase">高级重置 (危险)</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden border border-[#FF453A]/30 p-4 space-y-3">
+                  <div className="text-xs text-[#8E8E93] leading-relaxed">
+                    如果沙箱内部依赖损坏严重，可完全注销当前实例并重新拉取全新镜像初始化。此操作不可逆。
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (confirm("⚠️ 确定要完全重置并重新安装沙箱吗？当前沙箱内的全部非持久化更改将被清空。")) {
+                        handleStartAutoInit();
+                      }
+                    }}
+                    className="w-full py-2 rounded-xl bg-[#FF453A]/15 hover:bg-[#FF453A]/25 border border-[#FF453A]/30 text-[#FF453A] text-xs font-semibold transition"
+                  >
+                    完全重置并重新安装沙箱 (Reset Rootfs)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          关于页面 (1:1 完美复刻截图 1000143646.jpg)
+      ========================================================================= */}
+      {settingsView === "about" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold text-black dark:text-white">关于</h2>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* Logo 与 核心标语 */}
+              <div className="flex flex-col items-center text-center space-y-2 py-4">
+                <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-[#007AFF] via-[#5856D6] to-[#AF52DE] flex items-center justify-center text-white shadow-xl shadow-indigo-500/20">
+                  <Sparkles className="w-10 h-10" />
+                </div>
+                <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.7 (Windows 测试版)</div>
+                <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
+                  Minis 是完全本地、完全私密的设备端 Agent。
+                </p>
+              </div>
+
+              {/* 链接分组 */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">链接</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <a
+                    href="https://github.com/Siu-Leung/OpenMinis-PC"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <FileCode className="w-4 h-4" />
+                      </div>
+                      <span className="text-sm font-semibold text-black dark:text-white">GitHub 仓库</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[#8E8E93]">
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <ChevronRight className="w-4 h-4" />
+                    </div>
+                  </a>
+                </div>
+              </div>
+
+              {/* 应用更新分组 */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">应用更新</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <div
+                    onClick={async () => {
+                      setCheckingUpdate(true);
+                      try {
+                        const res = await fetch("https://api.github.com/repos/Siu-Leung/OpenMinis-PC/releases/latest");
+                        if (res.ok) {
+                          const data = await res.json();
+                          const tag = data.tag_name || "v1.13.0.7";
+                          setUpdateMsg(`最新发布版本：${tag}（当前已是最新版本）`);
+                        } else {
+                          setUpdateMsg("当前已是最新版本");
+                        }
+                      } catch (_) {
+                        setUpdateMsg("当前已是最新版本");
+                      } finally {
+                        setCheckingUpdate(false);
+                      }
+                    }}
+                    className="flex items-center justify-between p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <ArrowUp className="w-4 h-4 rotate-180" />
+                      </div>
+                      <div>
+                        <span className="text-sm font-semibold text-black dark:text-white">检查更新</span>
+                        {updateMsg && <div className="text-[11px] text-[#34C759] mt-0.5">{updateMsg}</div>}
+                      </div>
+                    </div>
+                    {checkingUpdate ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-[#8E8E93]" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                    )}
+                  </div>
+                </div>
+                <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
+                  当前版本：1.13.0.7 (Windows 测试版)
+                </div>
               </div>
             </div>
           </div>

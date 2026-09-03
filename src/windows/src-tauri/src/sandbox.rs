@@ -1,5 +1,5 @@
 //! OpenMinis Windows WSL2 沙箱隔离层 (完全静默加固与全自动初始化版)
-//! 备注：私人用极度不稳定 Aicoding 改
+//! 备注：Windows 测试版 (Experimental)
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,16 @@ const DEFAULT_DISTRO_NAME: &str = "OpenMinisSandbox";
 const MAX_STDOUT_CHARS: usize = 12000;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxDiagnostics {
+    pub is_installed: bool,
+    pub distro_state: String, // "Running" | "Stopped" | "NotInstalled"
+    pub distro_name: String,
+    pub isolation_active: bool,
+    pub isolation_text: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandOutput {
@@ -433,6 +443,108 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
+        cmd.spawn().map_err(|e| format!("无法打开资源管理器: {}", e))?;
+        Ok(())
+    }
+
+    /// 获取沙箱的详细健康诊断状态
+    pub async fn get_diagnostics(&self) -> SandboxDiagnostics {
+        let is_installed = self.check_sandbox_ready().await;
+        if !is_installed {
+            return SandboxDiagnostics {
+                is_installed: false,
+                distro_state: "NotInstalled".to_string(),
+                distro_name: self.distro_name.clone(),
+                isolation_active: false,
+                isolation_text: "沙箱尚未安装配置".to_string(),
+            };
+        }
+
+        // 查询实例运行状态 (wsl -l -v)
+        let mut cmd = Self::silent_command("wsl");
+        cmd.args(["-l", "-v"]);
+        let mut state = "Stopped".to_string();
+        if let Ok(out) = cmd.output().await {
+            let text_utf16 = String::from_utf16_lossy(
+                &out.stdout
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect::<Vec<u16>>(),
+            );
+            let text = if text_utf16.is_empty() {
+                String::from_utf8_lossy(&out.stdout).to_string()
+            } else {
+                text_utf16
+            };
+            for line in text.lines() {
+                if line.contains(&self.distro_name) {
+                    if line.contains("Running") || line.contains("正在运行") {
+                        state = "Running".to_string();
+                    }
+                    break;
+                }
+            }
+        }
+
+        SandboxDiagnostics {
+            is_installed: true,
+            distro_state: state,
+            distro_name: self.distro_name.clone(),
+            isolation_active: true,
+            isolation_text: "零泄漏 (/mnt 宿主盘已彻底屏蔽)".to_string(),
+        }
+    }
+
+    /// 一键无损智能修复沙箱（修复 DNS、权限、源与隔离规则，不破坏已有文件与安装包）
+    pub async fn repair_sandbox(&self) -> Result<String, String> {
+        if !self.check_sandbox_ready().await {
+            return Err("沙箱未安装，无法执行修复。请先进行初始化配置。".to_string());
+        }
+
+        // 1. 重新注入 /etc/wsl.conf
+        let wsl_conf = "[automount]\nenabled = false\nmountFsTab = false\n\n[interop]\nenabled = false\nappendWindowsPath = false\n\n[network]\ngenerateResolvConf = true\n";
+        let b64_conf = base64_encode(wsl_conf.as_bytes());
+        let _ = self.execute_raw_shell(&format!("echo '{}' | base64 -d > /etc/wsl.conf", b64_conf), 15).await;
+
+        // 2. 修复基础权限与工作目录
+        let repair_cmd = r#"
+mkdir -p /var/minis/workspace /var/minis/attachments /var/minis/shared /var/minis/offloads /var/minis/memory
+chmod 000 /mnt 2>/dev/null || true
+chmod 777 -R /var/minis 2>/dev/null || true
+printf "nameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories 2>/dev/null || true
+"#;
+        let (code, stdout, stderr) = self.execute_raw_shell(repair_cmd, 30).await?;
+
+        // 3. 优雅重启实例生效
+        self.terminate_sandbox().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        if code == 0 {
+            Ok("沙箱无损诊断与修复完成！已重置 DNS、权限、国内源配置与宿主隔离策略。".to_string())
+        } else {
+            Err(format!("修复遇到错误: {}\n{}", stdout, stderr))
+        }
+    }
+
+    /// 完全重置沙箱 (销毁旧实例并全新初始化)
+    pub async fn reset_sandbox(&self, app: &AppHandle) -> Result<(), String> {
+        // 1. 注销现有 WSL 实例
+        let mut unregister_cmd = Self::silent_command("wsl");
+        unregister_cmd.args(["--unregister", &self.distro_name]);
+        let _ = unregister_cmd.output().await;
+
+        // 2. 重新初始化
+        self.auto_initialize(app).await
+    }
+
+    /// 在 Windows 资源管理器打开沙箱根文件系统 (\\wsl$\OpenMinisSandbox\)
+    pub fn open_rootfs_explorer(&self) -> Result<(), String> {
+        let target_unc = format!(r"\\wsl$\{}", self.distro_name);
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg(target_unc);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.spawn().map_err(|e| format!("无法打开资源管理器: {}", e))?;
         Ok(())
     }

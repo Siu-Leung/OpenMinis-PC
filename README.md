@@ -2,11 +2,11 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20(x64)-0078D6.svg?logo=windows&logoColor=white)](#-下载与快速开始)
-[![Release](https://img.shields.io/badge/Release-v1.13.0.6-brightgreen.svg?logo=github)](https://github.com/Siu-Leung/OpenMinis-PC/releases/tag/v1.13.0.6)
+[![Release](https://img.shields.io/badge/Release-v1.13.0.7-brightgreen.svg?logo=github)](https://github.com/Siu-Leung/OpenMinis-PC/releases/tag/v1.13.0.7)
 [![Build Status](https://img.shields.io/badge/CI-GitHub%20Actions%20Passed-success.svg?logo=githubactions&logoColor=white)](https://github.com/Siu-Leung/OpenMinis-PC/actions)
 
 > **⚠️ 特别声明 / Disclaimer**  
-> **备注：私人用极度不稳定 Aicoding 改**  
+> **备注：Windows 测试版 (Experimental)**  
 > 本项目为基于 [OpenMinis](https://github.com/OpenMinis/OpenMinis) 官方核心哲学针对 **Windows 桌面操作系统** 的全功能移植与深度加固版本，融合了 **Hermes Agent** 与 **AionUi (OpenClaw)** 的前沿设计，仅供个人技术研究与实验性探索使用。
 
 ---
@@ -75,13 +75,13 @@ OpenMinis-PC 将顶尖大模型（Claude、GPT-4o/5、DeepSeek-V3/R1、Gemini、
 
 所有安装包均通过 GitHub Actions 自动化流水线安全构建：
 
-👉 **[前往 GitHub Releases 查看与下载最新版本 (v1.13.0.6)](https://github.com/Siu-Leung/OpenMinis-PC/releases/tag/v1.13.0.6)**
+👉 **[前往 GitHub Releases 查看与下载最新版本 (v1.13.0.7)](https://github.com/Siu-Leung/OpenMinis-PC/releases/tag/v1.13.0.7)**
 
 | 安装包文件 | 大小 | 说明 | 快速直链 |
 | :--- | :---: | :--- | :--- |
-| **`OpenMinis_1.13.0.6_x64-setup.exe`** | **~3.7 MB** | **标准安装向导版（强烈推荐）** | [点击直接下载](https://github.com/Siu-Leung/OpenMinis-PC/releases/download/v1.13.0.6/OpenMinis_1.13.0.6_x64-setup.exe) |
-| **`OpenMinis_1.13.0.6_x64_en-US.msi`** | **~5.4 MB** | Windows 原生 MSI 安装程序 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis-PC/releases/download/v1.13.0.6/OpenMinis_1.13.0.6_x64_en-US.msi) |
-| **`openminis-windows-v1.13.0.6.exe`** | **~14.8 MB** | 绿色单文件便携免安装版，双击即跑 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis-PC/releases/download/v1.13.0.6/openminis-windows-v1.13.0.6.exe) |
+| **`OpenMinis_1.13.0.7_x64-setup.exe`** | **~3.8 MB** | **标准安装向导版（强烈推荐）** | [点击直接下载](https://github.com/Siu-Leung/OpenMinis-PC/releases/download/v1.13.0.7/OpenMinis_1.13.0.7_x64-setup.exe) |
+| **`OpenMinis_1.13.0.7_x64_en-US.msi`** | **~5.5 MB** | Windows 原生 MSI 安装程序 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis-PC/releases/download/v1.13.0.7/OpenMinis_1.13.0.7_x64_en-US.msi) |
+| **`openminis-windows-v1.13.0.7.exe`** | **~15.1 MB** | 绿色单文件便携免安装版，双击即跑 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis-PC/releases/download/v1.13.0.7/openminis-windows-v1.13.0.7.exe) |
 
 ### 2. 沙箱初始化 (仅首次使用)
 

@@ -197,6 +197,26 @@ async fn terminate_sandbox(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn get_sandbox_diagnostics(state: State<'_, AppState>) -> Result<sandbox::SandboxDiagnostics, String> {
+    Ok(state.sandbox.get_diagnostics().await)
+}
+
+#[tauri::command]
+async fn repair_sandbox(state: State<'_, AppState>) -> Result<String, String> {
+    state.sandbox.repair_sandbox().await
+}
+
+#[tauri::command]
+async fn reset_sandbox(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.sandbox.reset_sandbox(&app).await
+}
+
+#[tauri::command]
+async fn open_sandbox_rootfs_dir(state: State<'_, AppState>) -> Result<(), String> {
+    state.sandbox.open_rootfs_explorer()
+}
+
+#[tauri::command]
 fn restart_app(app: AppHandle) {
     app.restart();
 }
@@ -441,6 +461,10 @@ fn main() {
             open_sandbox_dir,
             launch_interactive_terminal,
             terminate_sandbox,
+            get_sandbox_diagnostics,
+            repair_sandbox,
+            reset_sandbox,
+            open_sandbox_rootfs_dir,
             restart_app,
             fetch_provider_models,
             // 模型组与用量 (对标原版)

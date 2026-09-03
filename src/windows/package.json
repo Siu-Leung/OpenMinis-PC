@@ -1,7 +1,7 @@
 {
   "name": "openminis-windows",
-  "version": "1.13.6",
-  "description": "OpenMinis for Windows (v1.13.0.6 - 纯净开箱状态与独立内置浏览器版)",
+  "version": "1.13.7",
+  "description": "OpenMinis for Windows (v1.13.0.7 - Windows 测试版)",
   "private": true,
   "scripts": {
     "dev": "vite",
