@@ -445,7 +445,7 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
     }
 }
 
-fn base64_encode(input: &[u8]) -> String {
+pub fn base64_encode(input: &[u8]) -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut buf = String::with_capacity((input.len() + 2) / 3 * 4);
     for chunk in input.chunks(3) {

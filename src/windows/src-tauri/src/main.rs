@@ -19,6 +19,7 @@ use mcp::{McpManager, McpServer};
 use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use sandbox::SandboxManager;
 use scheduler::{CronScheduler, ScheduledTask};
+use serde::{Deserialize, Serialize};
 use session::SessionStore;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
