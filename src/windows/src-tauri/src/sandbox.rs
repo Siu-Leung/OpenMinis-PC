@@ -68,19 +68,50 @@ impl SandboxManager {
         }
     }
 
+    /// 同步检查沙箱是否已就绪（供同步上下文快速检测）
+    pub fn is_sandbox_ready_sync(&self) -> bool {
+        let mut cmd = std::process::Command::new("wsl");
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.args(["--list", "--quiet"]);
+        if let Ok(out) = cmd.output() {
+            let stdout = String::from_utf16_lossy(
+                &out.stdout
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect::<Vec<u16>>(),
+            );
+            let text = if stdout.is_empty() {
+                String::from_utf8_lossy(&out.stdout).to_string()
+            } else {
+                stdout
+            };
+            text.contains(&self.distro_name)
+        } else {
+            false
+        }
+    }
+
     /// 全自动一键初始化 WSL2 沙箱（无需用户打开 PowerShell 敲命令）
     pub async fn auto_initialize(&self, app: &AppHandle) -> Result<(), String> {
-        let _ = app.emit("sandbox-init-status", "正在检查系统 WSL 环境...");
+        let _ = app.emit("sandbox-init-step", serde_json::json!({ "step": 1, "text": "正在检查系统 WSL 环境...", "percent": 10 }));
 
-        // 1. 检查 WSL 状态
-        let mut wsl_status_cmd = Self::silent_command("wsl");
-        wsl_status_cmd.arg("--status");
-        let status_out = wsl_status_cmd.output().await.map_err(|e| format!("无法调用 wsl: {}", e))?;
-        if !status_out.status.success() {
-            return Err("未检测到就绪的 WSL2 环境。请先在 Windows 终端中运行 'wsl --install --no-distribution' 并重启。".to_string());
+        // 1. 检查 WSL 是否存在
+        let mut wsl_cmd = Self::silent_command("wsl");
+        wsl_cmd.arg("-l");
+        let wsl_available = match wsl_cmd.output().await {
+            Ok(_) => true,
+            Err(_) => false,
+        };
+
+        if !wsl_available {
+            let err = "系统未检测到 WSL 运行时。请在 Windows 搜索框输入 PowerShell 并右键【以管理员身份运行】，执行：wsl --install --no-distribution，然后重启电脑。";
+            let _ = app.emit("sandbox-init-error", err);
+            return Err(err.to_string());
         }
 
         // 2. 准备目录
+        let _ = app.emit("sandbox-init-step", serde_json::json!({ "step": 2, "text": "正在准备本地沙箱存储目录...", "percent": 25 }));
         let base_dir = directories::ProjectDirs::from("com", "openminis", "OpenMinis")
             .map(|d| d.data_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from(r"C:\OpenMinis"));
@@ -92,28 +123,57 @@ impl SandboxManager {
 
         let tar_path = download_dir.join("alpine-minirootfs-3.20.2-x86_64.tar.gz");
 
-        // 3. 下载 Alpine Linux Minirootfs (约 3.8MB)
-        if !tar_path.exists() {
-            let _ = app.emit("sandbox-init-status", "正在自动下载 Alpine Linux 精简沙箱镜像 (约 3.8MB)...");
-            let download_url = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz";
+        // 3. 下载 Alpine Linux Minirootfs (国内多节点加速)
+        if !tar_path.exists() || std::fs::metadata(&tar_path).map(|m| m.len()).unwrap_or(0) < 1_000_000 {
+            let _ = app.emit("sandbox-init-step", serde_json::json!({ "step": 3, "text": "正在下载 Alpine Linux 精简沙箱镜像 (约 3.8MB，已启用国内镜像加速)...", "percent": 45 }));
+            
+            let mirror_urls = [
+                "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz",
+                "https://mirrors.aliyun.com/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz",
+                "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz",
+            ];
 
             let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(60))
+                .timeout(Duration::from_secs(45))
                 .build()
                 .map_err(|e| e.to_string())?;
 
-            let resp = client.get(download_url).send().await.map_err(|e| format!("下载 Alpine 镜像失败: {}", e))?;
-            if !resp.status().is_success() {
-                return Err(format!("下载镜像失败: HTTP {}", resp.status()));
+            let mut downloaded = false;
+            let mut last_err = String::new();
+
+            for url in &mirror_urls {
+                match client.get(*url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(bytes) = resp.bytes().await {
+                            if bytes.len() > 1_000_000 && std::fs::write(&tar_path, &bytes).is_ok() {
+                                downloaded = true;
+                                break;
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        last_err = format!("HTTP {}", resp.status());
+                    }
+                    Err(e) => {
+                        last_err = e.to_string();
+                    }
+                }
             }
 
-            let bytes = resp.bytes().await.map_err(|e| format!("读取镜像数据流失败: {}", e))?;
-            std::fs::write(&tar_path, &bytes).map_err(|e| format!("保存镜像到本地失败: {}", e))?;
+            if !downloaded {
+                let err_msg = format!("下载 Alpine 沙箱镜像失败，请检查网络连接: {}", last_err);
+                let _ = app.emit("sandbox-init-error", &err_msg);
+                return Err(err_msg);
+            }
         }
 
-        // 4. 导入 WSL 实例
+        // 4. 导入 WSL 实例 (清理残留目录)
         if !self.check_sandbox_ready().await {
-            let _ = app.emit("sandbox-init-status", "正在导入并配置隔离沙箱实例...");
+            let _ = app.emit("sandbox-init-step", serde_json::json!({ "step": 4, "text": "正在导入沙箱实例到 WSL2...", "percent": 65 }));
+            
+            let _ = std::fs::remove_dir_all(&sandbox_dir);
+            let _ = std::fs::create_dir_all(&sandbox_dir);
+
             let mut import_cmd = Self::silent_command("wsl");
             import_cmd.args([
                 "--import",
@@ -123,28 +183,43 @@ impl SandboxManager {
                 "--version",
                 "2",
             ]);
-            let import_res = import_cmd.output().await.map_err(|e| format!("WSL 导入失败: {}", e))?;
+            let import_res = import_cmd.output().await.map_err(|e| format!("无法执行 wsl --import: {}", e))?;
             if !import_res.status.success() {
-                let err = String::from_utf8_lossy(&import_res.stderr);
-                return Err(format!("WSL 导入镜像失败: {}", err));
+                // 尝试兼容模式 (不带 --version 2)
+                let err = String::from_utf8_lossy(&import_res.stderr).to_string();
+                let mut fallback_cmd = Self::silent_command("wsl");
+                fallback_cmd.args([
+                    "--import",
+                    &self.distro_name,
+                    &sandbox_dir.to_string_lossy(),
+                    &tar_path.to_string_lossy(),
+                ]);
+                let fb_res = fallback_cmd.output().await.map_err(|e| format!("重试导入失败: {}", e))?;
+                if !fb_res.status.success() {
+                    let fb_err = String::from_utf8_lossy(&fb_res.stderr);
+                    let final_err = format!("WSL 导入失败:\n{}\n{}", err.trim(), fb_err.trim());
+                    let _ = app.emit("sandbox-init-error", &final_err);
+                    return Err(final_err);
+                }
             }
         }
 
-        // 5. 注入安全隔离配置 (/etc/wsl.conf)
-        let _ = app.emit("sandbox-init-status", "正在写入零信任宿主隔离与防逃逸规则...");
+        // 5. 注入安全隔离规则
+        let _ = app.emit("sandbox-init-step", serde_json::json!({ "step": 5, "text": "正在注入零信任宿主磁盘隔离规则...", "percent": 80 }));
         let wsl_conf = "[automount]\nenabled = false\nmountFsTab = false\n\n[interop]\nenabled = false\nappendWindowsPath = false\n\n[network]\ngenerateResolvConf = true\n";
         let b64_conf = base64_encode(wsl_conf.as_bytes());
         let inject_cmd = format!("echo '{}' | base64 -d > /etc/wsl.conf", b64_conf);
         let _ = self.execute_raw_shell(&inject_cmd, 15).await;
 
-        // 6. 配置沙箱内部工作目录与 Python/基础工具
-        let _ = app.emit("sandbox-init-status", "正在配置沙箱内工作目录与运行工具箱...");
+        // 6. 配置沙箱内部工作目录与基础工具
+        let _ = app.emit("sandbox-init-step", serde_json::json!({ "step": 6, "text": "正在安装 Python 与核心工具箱 (约需 10-20 秒)...", "percent": 90 }));
         let setup_cmd = r#"
 mkdir -p /var/minis/workspace /var/minis/attachments /var/minis/shared /var/minis/offloads /var/minis/memory
 chmod 000 /mnt 2>/dev/null || true
+printf "nameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 8.8.8.8\n" > /etc/resolv.conf
 sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories 2>/dev/null || true
-echo "nameserver 1.1.1.1" > /etc/resolv.conf
-apk update && apk add --no-cache curl ca-certificates busybox python3 py3-pip bash jq openssh-client sshpass
+apk update
+apk add --no-cache curl ca-certificates busybox python3 py3-pip bash jq openssh-client sshpass
 pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
 "#;
         let _ = self.execute_raw_shell(setup_cmd, 180).await;
@@ -153,7 +228,7 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
         self.terminate_sandbox().await;
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let _ = app.emit("sandbox-init-status", "就绪");
+        let _ = app.emit("sandbox-init-step", serde_json::json!({ "step": 7, "text": "沙箱配置就绪！", "percent": 100, "done": true }));
         Ok(())
     }
 
@@ -268,30 +343,6 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
             Ok(())
         } else {
             Err(format!("写入文件失败: {}", stderr))
-        }
-    }
-
-    /// 同步检查沙箱是否已就绪（供同步上下文快速检测）
-    pub fn is_sandbox_ready_sync(&self) -> bool {
-        let mut cmd = std::process::Command::new("wsl");
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd.args(["--list", "--quiet"]);
-        if let Ok(out) = cmd.output() {
-            let stdout = String::from_utf16_lossy(
-                &out.stdout
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                    .collect::<Vec<u16>>(),
-            );
-            let text = if stdout.is_empty() {
-                String::from_utf8_lossy(&out.stdout).to_string()
-            } else {
-                stdout
-            };
-            text.contains(&self.distro_name)
-        } else {
-            false
         }
     }
 

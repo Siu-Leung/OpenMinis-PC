@@ -22,8 +22,11 @@ import {
   FileText,
   AlertTriangle,
   RefreshCw,
-  Sparkles,
-  Command
+  X,
+  Paperclip,
+  Image as ImageIcon,
+  CheckCircle2,
+  Loader2
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -33,6 +36,8 @@ interface ChatMessage {
   content: string;
   tool_calls?: any;
   tool_call_id?: string;
+  images?: string[];
+  files?: { name: string; url: string }[];
 }
 
 interface AgentConfig {
@@ -54,21 +59,28 @@ interface SessionRecord {
   preview: string;
 }
 
-interface ScheduledTask {
+interface AttachmentItem {
   id: string;
   name: string;
-  prompt: string;
-  time: string;
-  repeat: string;
-  enabled: boolean;
-  last_run: string | null;
-  days: string[];
+  dataUrl: string;
+  isMedia: boolean;
+  sizeStr: string;
+}
+
+interface InitStepPayload {
+  step: number;
+  text: string;
+  percent: number;
+  done?: boolean;
 }
 
 export default function App() {
   const [sandboxReady, setSandboxReady] = useState<boolean>(true);
-  const [initializingSandbox, setInitializingSandbox] = useState<boolean>(false);
-  const [initStatusText, setInitStatusText] = useState<string>("");
+  const [showInitModal, setShowInitModal] = useState<boolean>(false);
+  const [initPercent, setInitPercent] = useState<number>(0);
+  const [initCurrentText, setInitCurrentText] = useState<string>("准备中...");
+  const [initLogs, setInitLogs] = useState<string[]>([]);
+  const [initError, setInitError] = useState<string | null>(null);
 
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -76,7 +88,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境，已集成浏览器自动化、持久化记忆与自动化运维工具链。有什么可以为你做的？"
+      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境，支持浏览器自动化、代码执行、文件分析与图片多模态。支持拖拽或粘贴图片/文件到输入框直接分析。"
     }
   ]);
   const [input, setInput] = useState("");
@@ -84,7 +96,11 @@ export default function App() {
   const [streamingText, setStreamingText] = useState("");
   const [activeToolName, setActiveToolName] = useState<string | null>(null);
 
-  // 折叠状态记录 (针对各个工具输出块)
+  // 待发送附件列表 (支持多模态图片与文件)
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 折叠工具卡片状态
   const [expandedTools, setExpandedTools] = useState<Record<number, boolean>>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
@@ -93,7 +109,7 @@ export default function App() {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
 
-  // 设置对话框
+  // 设置模态框
   const [showSettings, setShowSettings] = useState(false);
   const [config, setConfig] = useState<AgentConfig>(() => {
     const saved = localStorage.getItem("openminis_config");
@@ -108,14 +124,7 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
 
-  // 定时任务面板
-  const [showTasksModal, setShowTasksModal] = useState(false);
-  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
-  const [newTaskName, setNewTaskName] = useState("");
-  const [newTaskPrompt, setNewTaskPrompt] = useState("");
-  const [newTaskTime, setNewTaskTime] = useState("09:00");
-
-  // 记忆查看面板
+  // 记忆查看抽屉
   const [showMemoryModal, setShowMemoryModal] = useState(false);
   const [memoryText, setMemoryText] = useState("");
 
@@ -123,10 +132,8 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    // 检测沙箱状态
     checkSandbox();
 
-    // 自动加载模型缓存
     const cachedModels = localStorage.getItem("openminis_cached_models");
     if (cachedModels) {
       try { setAvailableModels(JSON.parse(cachedModels)); } catch (_) {}
@@ -146,31 +153,85 @@ export default function App() {
       }
     });
 
-    // 监听沙箱自动初始化进度
-    const unlistenInit = listen<string>("sandbox-init-status", (event) => {
-      setInitStatusText(event.payload);
-      if (event.payload === "就绪") {
+    // 监听沙箱详细进度步进
+    const unlistenInitStep = listen<InitStepPayload>("sandbox-init-step", (event) => {
+      const data = event.payload;
+      setInitPercent(data.percent);
+      setInitCurrentText(data.text);
+      setInitLogs(prev => [...prev, data.text]);
+      if (data.done) {
         setSandboxReady(true);
-        setInitializingSandbox(false);
+        setTimeout(() => setShowInitModal(false), 1200);
       }
     });
 
-    // 监听定时任务触发
-    const unlistenTask = listen<ScheduledTask>("scheduled-task-trigger", (event) => {
-      const task = event.payload;
-      setInput(task.prompt);
+    // 监听沙箱初始化错误
+    const unlistenInitErr = listen<string>("sandbox-init-error", (event) => {
+      setInitError(event.payload);
+      setInitLogs(prev => [...prev, `❌ 错误: ${event.payload}`]);
     });
 
     return () => {
       unlistenStream.then(un => un());
-      unlistenInit.then(un => un());
-      unlistenTask.then(un => un());
+      unlistenInitStep.then(un => un());
+      unlistenInitErr.then(un => un());
     };
   }, []);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, activeToolName]);
+  }, [messages, streamingText, activeToolName, attachments]);
+
+  // 剪贴板图片粘贴 (Ctrl+V)
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith("image/")) {
+        const file = items[i].getAsFile();
+        if (file) {
+          processFile(file);
+          e.preventDefault();
+        }
+      }
+    }
+  };
+
+  // 拖拽文件进入聊天框
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      for (let i = 0; i < e.dataTransfer.files.length; i++) {
+        processFile(e.dataTransfer.files[i]);
+      }
+    }
+  };
+
+  const processFile = (file: File) => {
+    const isMedia = file.type.startsWith("image/");
+    const sizeStr = file.size > 1024 * 1024 
+      ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
+      : `${Math.round(file.size / 1024)} KB`;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      setAttachments(prev => [
+        ...prev,
+        {
+          id: Math.random().toString(36).substring(7),
+          name: file.name,
+          dataUrl,
+          isMedia,
+          sizeStr
+        }
+      ]);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id));
+  };
 
   const checkSandbox = async () => {
     try {
@@ -181,16 +242,18 @@ export default function App() {
     }
   };
 
-  const handleAutoInitSandbox = async () => {
-    setInitializingSandbox(true);
-    setInitStatusText("正在启动全自动初始化流程...");
+  const handleStartAutoInit = async () => {
+    setShowInitModal(true);
+    setInitPercent(5);
+    setInitCurrentText("正在准备沙箱配置环境...");
+    setInitLogs(["正在启动 WSL2 Alpine 沙箱自动初始化..."]);
+    setInitError(null);
+
     try {
       await invoke("auto_initialize_sandbox");
       setSandboxReady(true);
     } catch (err: any) {
-      alert("沙箱初始化遇到错误:\n" + (err?.toString() || "未知异常"));
-    } finally {
-      setInitializingSandbox(false);
+      setInitError(err?.toString() || "沙箱初始化发生异常");
     }
   };
 
@@ -251,21 +314,56 @@ export default function App() {
     setMessages([
       {
         role: "assistant",
-        content: "已创建新对话。随时提出问题或下达指令。"
+        content: "已开启新会话。随时输入文字、拖入文件或粘贴截图进行分析。"
       }
     ]);
     setCurrentSessionId(null);
     setInput("");
+    setAttachments([]);
   };
 
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
+    if ((!input.trim() && attachments.length === 0) || loading) return;
     if (!config.api_key) {
       setShowSettings(true);
       return;
     }
 
-    const userMsg: ChatMessage = { role: "user", content: input };
+    const currentAttachments = [...attachments];
+    setAttachments([]); // 清空输入栏待发附件
+
+    // 1. 保存上传文件到沙箱并组装 Prompt 提示
+    let promptText = input.trim();
+    const uploadedImages: string[] = [];
+    const uploadedFiles: { name: string; url: string }[] = [];
+
+    for (const att of currentAttachments) {
+      try {
+        const minisUrl = await invoke<string>("upload_chat_attachment", {
+          name: att.name,
+          base64Data: att.dataUrl,
+          isMedia: att.isMedia
+        });
+
+        if (att.isMedia) {
+          uploadedImages.push(att.dataUrl);
+          promptText += `\n\n[已就绪图片: ${minisUrl}]`;
+        } else {
+          uploadedFiles.push({ name: att.name, url: minisUrl });
+          promptText += `\n\n[已就绪文件: ${minisUrl} (大小: ${att.sizeStr})，可直接读取或用 Python 处理]`;
+        }
+      } catch (err: any) {
+        console.error("上传附件失败:", err);
+      }
+    }
+
+    const userMsg: ChatMessage = {
+      role: "user",
+      content: promptText || "请分析已上传的图片/文件",
+      images: uploadedImages.length > 0 ? uploadedImages : undefined,
+      files: uploadedFiles.length > 0 ? uploadedFiles : undefined
+    };
+
     const nextHistory = [...messages, userMsg];
     setMessages(nextHistory);
     setInput("");
@@ -273,7 +371,6 @@ export default function App() {
     setStreamingText("");
     setActiveToolName(null);
 
-    // 重设输入框高度
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -328,12 +425,30 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen bg-[#000000] text-[#FFFFFF] font-sans antialiased overflow-hidden select-none">
+    <div 
+      onDrop={handleDrop}
+      onDragOver={e => e.preventDefault()}
+      className="flex h-screen w-screen bg-[#000000] text-[#FFFFFF] font-sans antialiased overflow-hidden select-none"
+    >
+      {/* 隐藏的文件上传 input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={e => {
+          if (e.target.files) {
+            for (let i = 0; i < e.target.files.length; i++) {
+              processFile(e.target.files[i]);
+            }
+          }
+        }}
+      />
+
       {/* ======================= 原版 Minis 极简侧边栏 ======================= */}
       {sidebarOpen && (
         <aside className="w-[260px] h-full bg-[#000000] border-r border-[#1C1C1E] flex flex-col justify-between p-3 shrink-0 z-20">
           <div className="flex flex-col h-full min-h-0">
-            {/* 顶栏：新对话与关闭 */}
             <div className="flex items-center justify-between px-2 py-1 mb-3">
               <span className="text-xs font-semibold tracking-wider text-[#8E8E93] uppercase">Minis</span>
               <button
@@ -345,7 +460,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* 搜索框 */}
             <div className="relative mb-3 px-1">
               <Search className="w-3.5 h-3.5 text-[#636366] absolute left-3.5 top-2.5" />
               <input
@@ -499,18 +613,13 @@ export default function App() {
           <div className="bg-[#1C1C1E] border-b border-[#2C2C2E] px-4 py-2.5 flex items-center justify-between text-xs z-10">
             <div className="flex items-center gap-2 text-[#FF9F0A]">
               <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>
-                {initializingSandbox
-                  ? initStatusText || "正在全自动配置沙箱..."
-                  : "WSL2 独立沙箱尚未安装或未完成配置"}
-              </span>
+              <span>WSL2 独立沙箱尚未安装或未完成配置</span>
             </div>
             <button
-              onClick={handleAutoInitSandbox}
-              disabled={initializingSandbox}
-              className="bg-[#0A84FF] hover:bg-[#0071E3] disabled:opacity-50 text-white px-3.5 py-1 rounded-full font-medium transition shrink-0"
+              onClick={handleStartAutoInit}
+              className="bg-[#0A84FF] hover:bg-[#0071E3] text-white px-3.5 py-1 rounded-full font-medium transition shrink-0"
             >
-              {initializingSandbox ? "配置中..." : "一键全自动配置沙箱"}
+              一键全自动配置沙箱
             </button>
           </div>
         )}
@@ -554,10 +663,31 @@ export default function App() {
                 );
               }
 
-              // 用户消息：纯正 iOS 气泡 (右对齐，无头像)
+              // 用户消息：纯正 iOS 气泡 (右对齐，无头像，支持图片与文件缩略)
               if (msg.role === "user") {
                 return (
-                  <div key={i} className="flex justify-end">
+                  <div key={i} className="flex flex-col items-end space-y-2">
+                    {/* 用户附带的图片预览 */}
+                    {msg.images && msg.images.length > 0 && (
+                      <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
+                        {msg.images.map((img, idx) => (
+                          <img key={idx} src={img} alt="upload" className="max-h-56 max-w-sm rounded-xl border border-[#2C2C2E] object-cover" />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 用户附带的文件标签 */}
+                    {msg.files && msg.files.length > 0 && (
+                      <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
+                        {msg.files.map((f, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1C1C1E] border border-[#2C2C2E] text-xs text-[#D1D1D6]">
+                            <FileText className="w-3.5 h-3.5 text-[#32ADE6]" />
+                            <span>{f.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="bg-[#1C1C1E] border border-[#2C2C2E] text-[#FFFFFF] rounded-[20px] rounded-br-[6px] px-4 py-2.5 max-w-[80%] text-sm leading-relaxed shadow-sm">
                       {msg.content}
                     </div>
@@ -600,43 +730,167 @@ export default function App() {
           </div>
         </div>
 
-        {/* ======================= 原版 Minis 标志性胶囊输入栏 ======================= */}
+        {/* ======================= 原版 Minis 标志性胶囊输入栏 (支持附件与图片) ======================= */}
         <div className="p-4 shrink-0 bg-gradient-to-t from-[#000000] via-[#000000] to-transparent">
-          <div className="max-w-3xl mx-auto bg-[#1C1C1E] border border-[#2C2C2E] rounded-[24px] px-3.5 py-2 flex items-end gap-2 focus-within:border-[#3A3A3C] transition shadow-xl">
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={e => {
-                setInput(e.target.value);
-                e.target.style.height = "auto";
-                e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
-              }}
-              onKeyDown={e => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder="发送给 OpenMinis..."
-              className="flex-1 bg-transparent border-none text-sm text-[#FFFFFF] placeholder-[#636366] focus:outline-none resize-none max-h-40 py-1"
-            />
+          <div className="max-w-3xl mx-auto bg-[#1C1C1E] border border-[#2C2C2E] rounded-[24px] px-3.5 py-2 flex flex-col gap-2 focus-within:border-[#3A3A3C] transition shadow-xl">
+            
+            {/* 上方附件暂存预览条 */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 pt-1 border-b border-[#2C2C2E] pb-2">
+                {attachments.map(att => (
+                  <div key={att.id} className="relative group flex items-center gap-2 p-1.5 bg-[#141416] border border-[#2C2C2E] rounded-xl text-xs">
+                    {att.isMedia ? (
+                      <img src={att.dataUrl} alt={att.name} className="w-10 h-10 rounded-lg object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-[#2C2C2E] flex items-center justify-center">
+                        <FileText className="w-5 h-5 text-[#32ADE6]" />
+                      </div>
+                    )}
+                    <div className="max-w-[120px] truncate text-[11px] pr-4">
+                      <div className="truncate text-white font-medium">{att.name}</div>
+                      <div className="text-[10px] text-[#8E8E93]">{att.sizeStr}</div>
+                    </div>
+                    <button
+                      onClick={() => removeAttachment(att.id)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-[#2C2C2E] hover:bg-[#FF453A] rounded-full flex items-center justify-center text-white transition"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
-            {/* 原版 Minis 经典圆钮发送键 (arrow.up.circle.fill 质感) */}
-            <button
-              onClick={handleSend}
-              disabled={loading || !input.trim()}
-              className={`w-7 h-7 rounded-full flex items-center justify-center transition shrink-0 ${
-                input.trim() && !loading
-                  ? "bg-[#FFFFFF] text-[#000000] hover:bg-[#E5E5EA]"
-                  : "bg-[#2C2C2E] text-[#636366] cursor-not-allowed"
-              }`}
-            >
-              <ArrowUp className="w-4 h-4 stroke-[2.5]" />
-            </button>
+            <div className="flex items-end gap-2">
+              {/* 文件上传触发按钮 (+) */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="w-7 h-7 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-white hover:bg-[#2C2C2E] transition shrink-0 mb-0.5"
+                title="上传文件或图片 (也支持直接拖拽或 Ctrl+V 粘贴截图)"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                value={input}
+                onPaste={handlePaste}
+                onChange={e => {
+                  setInput(e.target.value);
+                  e.target.style.height = "auto";
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
+                }}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                placeholder={attachments.length > 0 ? "输入对已选文件的要求..." : "发送消息、粘贴截图 (Ctrl+V) 或拖拽文件..."}
+                className="flex-1 bg-transparent border-none text-sm text-[#FFFFFF] placeholder-[#636366] focus:outline-none resize-none max-h-40 py-1"
+              />
+
+              {/* 原版 Minis 经典圆钮发送键 (arrow.up.circle.fill 质感) */}
+              <button
+                onClick={handleSend}
+                disabled={loading || (!input.trim() && attachments.length === 0)}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition shrink-0 mb-0.5 ${
+                  (input.trim() || attachments.length > 0) && !loading
+                    ? "bg-[#FFFFFF] text-[#000000] hover:bg-[#E5E5EA]"
+                    : "bg-[#2C2C2E] text-[#636366] cursor-not-allowed"
+                }`}
+              >
+                <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+              </button>
+            </div>
           </div>
         </div>
       </main>
+
+      {/* ======================= 可视化沙箱配置与排查中心 (绝不静默吞错误) ======================= */}
+      {showInitModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#1C1C1E] border border-[#2C2C2E] w-full max-w-lg rounded-2xl p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-[#2C2C2E]">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Terminal className="w-4 h-4 text-[#34C759]" />
+                <span>WSL2 Alpine 隔离沙箱配置向导</span>
+              </div>
+              {!initError && initPercent === 100 && (
+                <button onClick={() => setShowInitModal(false)} className="text-[#8E8E93] hover:text-white text-xs">✕</button>
+              )}
+            </div>
+
+            {/* 动态进度条 */}
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs text-[#8E8E93]">
+                <span>{initCurrentText}</span>
+                <span className="font-mono text-white">{initPercent}%</span>
+              </div>
+              <div className="w-full bg-[#141416] h-2 rounded-full overflow-hidden border border-[#2C2C2E]">
+                <div
+                  className={`h-full transition-all duration-300 ${initError ? "bg-[#FF453A]" : "bg-[#0A84FF]"}`}
+                  style={{ width: `${initPercent}%` }}
+                />
+              </div>
+            </div>
+
+            {/* 执行日志流 */}
+            <div className="bg-[#141416] border border-[#2C2C2E] rounded-xl p-3 h-44 overflow-y-auto font-mono text-[11px] text-[#A1A1A6] space-y-1">
+              {initLogs.map((log, i) => (
+                <div key={i} className="leading-relaxed">
+                  {log}
+                </div>
+              ))}
+            </div>
+
+            {/* 错误提示与重试 */}
+            {initError && (
+              <div className="p-3 bg-[#FF453A]/10 border border-[#FF453A]/30 rounded-xl text-xs text-[#FF453A] space-y-2">
+                <div className="font-semibold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4" /> 配置遇到问题
+                </div>
+                <div className="text-[11px] leading-relaxed text-[#FFD60A] font-mono whitespace-pre-wrap">
+                  {initError}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              {initError ? (
+                <>
+                  <button
+                    onClick={() => setShowInitModal(false)}
+                    className="px-4 py-1.5 rounded-full bg-[#2C2C2E] hover:bg-[#38383A] text-xs text-[#8E8E93] hover:text-white transition"
+                  >
+                    关闭
+                  </button>
+                  <button
+                    onClick={handleStartAutoInit}
+                    className="px-4 py-1.5 rounded-full bg-[#0A84FF] hover:bg-[#0071E3] text-xs font-medium text-white transition flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> 重新尝试
+                  </button>
+                </>
+              ) : initPercent === 100 ? (
+                <button
+                  onClick={() => setShowInitModal(false)}
+                  className="px-5 py-1.5 rounded-full bg-[#34C759] hover:bg-[#30B753] text-xs font-semibold text-white transition flex items-center gap-1.5"
+                >
+                  <CheckCircle2 className="w-4 h-4" /> 沙箱已就绪，开始使用
+                </button>
+              ) : (
+                <div className="text-xs text-[#8E8E93] flex items-center gap-2 py-1">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>全自动部署中，无需任何手工操作...</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ======================= 设置模态框 (iOS 质感) ======================= */}
       {showSettings && (

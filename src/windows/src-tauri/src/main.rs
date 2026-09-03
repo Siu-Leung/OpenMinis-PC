@@ -44,6 +44,39 @@ async fn auto_initialize_sandbox(app: AppHandle, state: State<'_, AppState>) -> 
 }
 
 #[tauri::command]
+async fn upload_chat_attachment(
+    state: State<'_, AppState>,
+    name: String,
+    base64_data: String,
+    is_media: bool,
+) -> Result<String, String> {
+    let clean_name = name.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "_");
+    let target_dir = if is_media { "/var/minis/attachments" } else { "/var/minis/workspace" };
+    let target_path = format!("{}/{}", target_dir, clean_name);
+
+    let raw_b64 = if let Some(idx) = base64_data.find(',') {
+        &base64_data[idx + 1..]
+    } else {
+        &base64_data
+    };
+
+    let b64 = raw_b64.replace('\r', "").replace('\n', "");
+    let safe_path = target_path.replace('\'', "'\\''");
+    let cmd = format!(
+        "mkdir -p \"$(dirname '{}')\" && echo '{}' | base64 -d > '{}'",
+        safe_path, b64, safe_path
+    );
+
+    let res = state.sandbox.execute_shell(&cmd, 30).await?;
+    if res.exit_code == 0 {
+        let minis_url = format!("minis://{}/{}", if is_media { "attachments" } else { "workspace" }, clean_name);
+        Ok(minis_url)
+    } else {
+        Err(format!("保存附件失败: {}", res.stderr))
+    }
+}
+
+#[tauri::command]
 async fn execute_sandbox_shell(
     state: State<'_, AppState>,
     cmd: String,
@@ -271,6 +304,7 @@ fn main() {
             // 沙箱与 Agent
             check_sandbox_status,
             auto_initialize_sandbox,
+            upload_chat_attachment,
             execute_sandbox_shell,
             run_agent_turn,
             open_sandbox_dir,
