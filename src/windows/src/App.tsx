@@ -270,8 +270,9 @@ export default function App() {
       thinkingTimerRef.current = setInterval(() => {
         setThinkingDuration(Math.round((Date.now() - start) / 100) / 10);
       }, 100);
-    } else if (agentStatus !== "thinking" && thinkingTimerRef.current) {
+    } else if (thinkingTimerRef.current) {
       clearInterval(thinkingTimerRef.current);
+      thinkingTimerRef.current = null;
     }
   }, [agentStatus]);
 
