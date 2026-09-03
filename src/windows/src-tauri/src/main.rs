@@ -1,22 +1,25 @@
 // Prevents console window on Windows
 #![windows_subsystem = "windows"]
 
-//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动 + 一键沙箱初始化 + 自动拉取模型 + MCP 管理)
+//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动 + 一键沙箱初始化 + 自动拉取模型 + MCP + 模型组 Fallback + 用量统计)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 mod agent;
 mod browser;
 mod mcp;
 mod memory;
+mod model_groups;
 mod sandbox;
 mod scheduler;
 mod session;
 mod tools;
+mod usage;
 
 use agent::{AgentConfig, AgentEngine, ChatMessage};
 use browser::BrowserEngine;
 use mcp::{McpManager, McpServer};
 use memory::{MemoryCategory, MemoryEntry, MemoryStore};
+use model_groups::{FullModelGroupsState, ModelGroupManager};
 use sandbox::SandboxManager;
 use scheduler::{CronScheduler, ScheduledTask};
 use serde::{Deserialize, Serialize};
@@ -24,6 +27,7 @@ use session::SessionStore;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tools::ToolDispatcher;
+use usage::{TotalUsageDashboard, UsageTracker};
 
 struct AppState {
     sandbox: Arc<SandboxManager>,
@@ -33,6 +37,8 @@ struct AppState {
     scheduler: Arc<CronScheduler>,
     memory: Arc<MemoryStore>,
     mcp: Arc<McpManager>,
+    usage: Arc<UsageTracker>,
+    model_groups: Arc<ModelGroupManager>,
 }
 
 // === 沙箱与 Agent 命令 ===
@@ -289,6 +295,28 @@ async fn toggle_mcp_server(state: State<'_, AppState>, id: String) -> Result<(),
     state.mcp.toggle_server(&id)
 }
 
+// === Token 用量统计命令 (对标截图 1000143344) ===
+
+#[tauri::command]
+async fn get_usage_dashboard(state: State<'_, AppState>) -> Result<TotalUsageDashboard, String> {
+    Ok(state.usage.get_dashboard_summary())
+}
+
+// === 模型组与 Defaults 管理命令 (对标截图 1000143328) ===
+
+#[tauri::command]
+async fn get_model_groups_state(state: State<'_, AppState>) -> Result<FullModelGroupsState, String> {
+    Ok(state.model_groups.get_state())
+}
+
+#[tauri::command]
+async fn save_model_groups_state(
+    state: State<'_, AppState>,
+    state_data: FullModelGroupsState,
+) -> Result<(), String> {
+    state.model_groups.save_state(state_data)
+}
+
 // === 会话管理命令 ===
 
 #[tauri::command]
@@ -358,8 +386,10 @@ fn main() {
     let sandbox = Arc::new(SandboxManager::new());
     let browser = Arc::new(BrowserEngine::new(sandbox.clone()));
     let memory = Arc::new(MemoryStore::new());
+    let usage = Arc::new(UsageTracker::new());
+    let model_groups = Arc::new(ModelGroupManager::new());
     let dispatcher = Arc::new(ToolDispatcher::new(sandbox.clone(), browser.clone(), memory.clone()));
-    let agent = Arc::new(AgentEngine::new(dispatcher.clone()));
+    let agent = Arc::new(AgentEngine::new(dispatcher.clone(), usage.clone()));
     let sessions = Arc::new(SessionStore::new());
     let scheduler = Arc::new(CronScheduler::new());
     let mcp = Arc::new(McpManager::new());
@@ -375,6 +405,8 @@ fn main() {
         scheduler,
         memory,
         mcp,
+        usage,
+        model_groups,
     };
 
     tauri::Builder::default()
@@ -411,6 +443,10 @@ fn main() {
             terminate_sandbox,
             restart_app,
             fetch_provider_models,
+            // 模型组与用量 (对标原版)
+            get_usage_dashboard,
+            get_model_groups_state,
+            save_model_groups_state,
             // MCP 管理
             list_mcp_servers,
             add_mcp_server,

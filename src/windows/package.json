@@ -1,7 +1,7 @@
 {
   "name": "openminis-windows",
-  "version": "1.13.3",
-  "description": "OpenMinis for Windows (v1.13.0.4 - 私人用极度不稳定 Aicoding 改)",
+  "version": "1.13.5",
+  "description": "OpenMinis for Windows (v1.13.0.5 - 原版 1:1 复刻模型组回退与用量版)",
   "private": true,
   "scripts": {
     "dev": "vite",

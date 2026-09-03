@@ -1,7 +1,8 @@
-//! OpenMinis Windows Agent Loop 核心逻辑 (完整思考模式与状态流式解析版)
+//! OpenMinis Windows Agent Loop 核心逻辑 (模型组 Fallback 自动回退 + 真实 Token 用量统计版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use crate::tools::ToolDispatcher;
+use crate::usage::UsageTracker;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -61,40 +62,44 @@ pub struct ChatMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
+    pub provider_id: Option<String>,
     pub provider_url: String,
     pub api_key: String,
     pub model: String,
+    pub fallback_models: Option<Vec<String>>, // 模型组回退队列
     pub system_prompt: Option<String>,
-    pub thinking_level: Option<String>, // "off" | "low" | "medium" | "high" | "max"
+    pub thinking_level: Option<String>,      // "off" | "low" | "medium" | "high" | "max"
     pub thinking_budget: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamEvent {
-    pub event_type: String, // "status" | "thinking" | "token" | "tool_start" | "tool_end" | "error"
+    pub event_type: String, // "status" | "thinking" | "token" | "tool_start" | "tool_end" | "fallback" | "error"
     pub content: String,
 }
 
 pub struct AgentEngine {
     pub dispatcher: Arc<ToolDispatcher>,
+    pub usage_tracker: Arc<UsageTracker>,
     pub http_client: reqwest::Client,
     pub execution_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AgentEngine {
-    pub fn new(dispatcher: Arc<ToolDispatcher>) -> Self {
+    pub fn new(dispatcher: Arc<ToolDispatcher>, usage_tracker: Arc<UsageTracker>) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             dispatcher,
+            usage_tracker,
             http_client,
             execution_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    /// 执行一轮 Agent 对话与工具调度 (带思考链流式解析、强度控制与时序合规)
+    /// 执行一轮 Agent 对话与工具调度 (带模型组 Fallback 自动容灾回退)
     pub async fn run_turn_stream(
         &self,
         app: &AppHandle,
@@ -122,165 +127,220 @@ impl AgentEngine {
             history[0].content = custom_sp.clone();
         }
 
+        // 准备回退模型候选队列 (当前模型在首位，后接 fallback 列表)
+        let mut candidate_models = vec![config.model.clone()];
+        if let Some(ref fallbacks) = config.fallback_models {
+            for m in fallbacks {
+                if !candidate_models.contains(m) && !m.trim().is_empty() {
+                    candidate_models.push(m.clone());
+                }
+            }
+        }
+
         let mut last_call_signature = String::new();
         let mut repeat_call_count = 0;
         let max_total_tool_calls = 20usize;
         let mut total_tool_calls = 0usize;
 
         for _ in 0..10 {
-            // 构建请求 Body (支持思考模式与强度参数)
-            let mut request_map = serde_json::Map::new();
-            request_map.insert("model".to_string(), json!(config.model));
-            request_map.insert("messages".to_string(), json!(history));
-            request_map.insert("tools".to_string(), tools_schema.clone());
-            request_map.insert("stream".to_string(), json!(true));
-            request_map.insert("temperature".to_string(), json!(0.7));
+            let mut stream_success = false;
+            let mut last_error_msg = String::new();
 
-            // 根据思考模式配置注入参数 (兼容 OpenAI, DeepSeek, Qwen)
-            let thinking_mode = config.thinking_level.as_deref().unwrap_or("high");
-            if thinking_mode != "off" {
-                // OpenAI 格式: reasoning_effort ("low" | "medium" | "high")
-                let effort = match thinking_mode {
-                    "low" => "low",
-                    "medium" => "medium",
-                    _ => "high",
-                };
-                request_map.insert("reasoning_effort".to_string(), json!(effort));
-
-                // DeepSeek 格式
-                request_map.insert("thinking".to_string(), json!({ "type": "enabled" }));
-
-                // 通用 extra_body (Qwen/DashScope/vLLM)
-                let budget = config.thinking_budget.unwrap_or(match thinking_mode {
-                    "low" => 1024,
-                    "medium" => 4096,
-                    "max" => 16384,
-                    _ => 8192,
-                });
-                request_map.insert("extra_body".to_string(), json!({
-                    "enable_thinking": true,
-                    "thinking_budget": budget
-                }));
-            } else {
-                request_map.insert("thinking".to_string(), json!({ "type": "disabled" }));
-            }
-
-            let request_body = Value::Object(request_map);
-
-            let _ = app.emit("agent-stream", StreamEvent {
-                event_type: "status".to_string(),
-                content: "connecting".to_string(),
-            });
-
-            let resp = self
-                .http_client
-                .post(format!("{}/chat/completions", config.provider_url.trim_end_matches('/')))
-                .header("Authorization", format!("Bearer {}", config.api_key))
-                .header("Content-Type", "application/json")
-                .json(&request_body)
-                .send()
-                .await
-                .map_err(|e| format!("LLM API 请求失败: {}", e))?;
-
-            if !resp.status().is_success() {
-                let err_text = resp.text().await.unwrap_or_default();
-                let _ = app.emit("agent-stream", StreamEvent {
-                    event_type: "error".to_string(),
-                    content: format!("LLM 返回错误: {}", err_text),
-                });
-                return Err(format!("LLM 返回错误: {}", err_text));
-            }
-
-            let mut stream = resp.bytes_stream();
             let mut assistant_content = String::new();
             let mut assistant_thinking = String::new();
             let mut tool_calls_map: std::collections::HashMap<usize, (String, String, String)> =
                 std::collections::HashMap::new();
+            let mut turn_start_time = Instant::now();
+            let mut successful_model = config.model.clone();
 
-            let mut buffer = String::new();
-            let turn_start_time = Instant::now();
-            let mut is_in_thinking_phase = false;
+            // 核心功能：模型组自动回退重试机制 (Fallback Loop)
+            for (idx, try_model) in candidate_models.iter().enumerate() {
+                if idx > 0 {
+                    let _ = app.emit("agent-stream", StreamEvent {
+                        event_type: "fallback".to_string(),
+                        content: format!("⚠️ 主模型遇到故障，已自动平滑回退至组内模型: {}", try_model),
+                    });
+                }
 
-            let mut done = false;
-            while !done {
-                let item = match stream.next().await {
-                    Some(item) => item.map_err(|e| format!("读取流数据中断: {}", e))?,
-                    None => break,
+                let mut request_map = serde_json::Map::new();
+                request_map.insert("model".to_string(), json!(try_model));
+                request_map.insert("messages".to_string(), json!(history));
+                request_map.insert("tools".to_string(), tools_schema.clone());
+                request_map.insert("stream".to_string(), json!(true));
+                request_map.insert("stream_options".to_string(), json!({ "include_usage": true }));
+                request_map.insert("temperature".to_string(), json!(0.7));
+
+                let thinking_mode = config.thinking_level.as_deref().unwrap_or("high");
+                if thinking_mode != "off" {
+                    let effort = match thinking_mode {
+                        "low" => "low",
+                        "medium" => "medium",
+                        _ => "high",
+                    };
+                    request_map.insert("reasoning_effort".to_string(), json!(effort));
+                    request_map.insert("thinking".to_string(), json!({ "type": "enabled" }));
+
+                    let budget = config.thinking_budget.unwrap_or(match thinking_mode {
+                        "low" => 1024,
+                        "medium" => 4096,
+                        "max" => 16384,
+                        _ => 8192,
+                    });
+                    request_map.insert("extra_body".to_string(), json!({
+                        "enable_thinking": true,
+                        "thinking_budget": budget
+                    }));
+                } else {
+                    request_map.insert("thinking".to_string(), json!({ "type": "disabled" }));
+                }
+
+                let request_body = Value::Object(request_map);
+
+                let _ = app.emit("agent-stream", StreamEvent {
+                    event_type: "status".to_string(),
+                    content: "connecting".to_string(),
+                });
+
+                let send_res = self
+                    .http_client
+                    .post(format!("{}/chat/completions", config.provider_url.trim_end_matches('/')))
+                    .header("Authorization", format!("Bearer {}", config.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&request_body)
+                    .send()
+                    .await;
+
+                let resp = match send_res {
+                    Ok(r) if r.status().is_success() => r,
+                    Ok(err_resp) => {
+                        let err_text = err_resp.text().await.unwrap_or_default();
+                        last_error_msg = format!("HTTP 错误: {}", err_text);
+                        continue; // 尝试下一个回退模型
+                    }
+                    Err(e) => {
+                        last_error_msg = format!("网络连接异常: {}", e);
+                        continue; // 尝试下一个回退模型
+                    }
                 };
-                buffer.push_str(&String::from_utf8_lossy(&item));
 
-                while let Some(pos) = buffer.find('\n') {
-                    let line = buffer[..pos].trim().to_string();
-                    buffer.drain(..=pos);
+                // 流式读取解析
+                let mut stream = resp.bytes_stream();
+                assistant_content.clear();
+                assistant_thinking.clear();
+                tool_calls_map.clear();
+                turn_start_time = Instant::now();
+                let mut is_in_thinking_phase = false;
+                let mut buffer = String::new();
+                let mut done = false;
 
-                    if line.is_empty() || line.starts_with(':') {
-                        continue;
-                    }
+                let mut read_failed = false;
 
-                    if line == "data: [DONE]" {
-                        done = true;
-                        break;
-                    }
+                while !done {
+                    let item = match stream.next().await {
+                        Some(Ok(bytes)) => bytes,
+                        Some(Err(e)) => {
+                            last_error_msg = format!("流式传输异常中断: {}", e);
+                            read_failed = true;
+                            break;
+                        }
+                        None => break,
+                    };
+                    buffer.push_str(&String::from_utf8_lossy(&item));
 
-                    if let Some(json_str) = line.strip_prefix("data: ") {
-                        if let Ok(val) = serde_json::from_str::<Value>(json_str) {
-                            if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
-                                if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
-                                    // 1. 深度思考增量 (DeepSeek reasoning_content 或 OpenAI reasoning)
-                                    if let Some(reasoning_chunk) = delta
-                                        .get("reasoning_content")
-                                        .or_else(|| delta.get("reasoning"))
-                                        .and_then(|v| v.as_str())
-                                    {
-                                        if !is_in_thinking_phase {
-                                            is_in_thinking_phase = true;
-                                            let _ = app.emit("agent-stream", StreamEvent {
-                                                event_type: "status".to_string(),
-                                                content: "thinking".to_string(),
-                                            });
-                                        }
-                                        assistant_thinking.push_str(reasoning_chunk);
-                                        let _ = app.emit("agent-stream", StreamEvent {
-                                            event_type: "thinking".to_string(),
-                                            content: reasoning_chunk.to_string(),
-                                        });
+                    while let Some(pos) = buffer.find('\n') {
+                        let line = buffer[..pos].trim().to_string();
+                        buffer.drain(..=pos);
+
+                        if line.is_empty() || line.starts_with(':') {
+                            continue;
+                        }
+
+                        if line == "data: [DONE]" {
+                            done = true;
+                            break;
+                        }
+
+                        if let Some(json_str) = line.strip_prefix("data: ") {
+                            if let Ok(val) = serde_json::from_str::<Value>(json_str) {
+                                // 捕获真实 Token 统计并持久化
+                                if let Some(usage) = val.get("usage") {
+                                    let p_tok = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let c_tok = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let cached = usage
+                                        .get("prompt_tokens_details")
+                                        .and_then(|d| d.get("cached_tokens"))
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+
+                                    if p_tok > 0 || c_tok > 0 {
+                                        self.usage_tracker.record_usage(
+                                            try_model,
+                                            config.provider_id.as_deref().unwrap_or("OPENAI"),
+                                            p_tok,
+                                            c_tok,
+                                            cached,
+                                        );
                                     }
+                                }
 
-                                    // 2. 正文内容增量
-                                    if let Some(chunk_text) = delta.get("content").and_then(|v| v.as_str()) {
-                                        if is_in_thinking_phase {
-                                            is_in_thinking_phase = false;
-                                            let _ = app.emit("agent-stream", StreamEvent {
-                                                event_type: "status".to_string(),
-                                                content: "answering".to_string(),
-                                            });
-                                        }
-                                        assistant_content.push_str(chunk_text);
-                                        let _ = app.emit("agent-stream", StreamEvent {
-                                            event_type: "token".to_string(),
-                                            content: chunk_text.to_string(),
-                                        });
-                                    }
-
-                                    // 3. 工具调用增量
-                                    if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-                                        for call in calls {
-                                            let index = call.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                                            let entry = tool_calls_map.entry(index).or_insert((
-                                                String::new(),
-                                                String::new(),
-                                                String::new(),
-                                            ));
-
-                                            if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
-                                                entry.0.push_str(id);
+                                if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
+                                    if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
+                                        // 思考链增量
+                                        if let Some(reasoning_chunk) = delta
+                                            .get("reasoning_content")
+                                            .or_else(|| delta.get("reasoning"))
+                                            .and_then(|v| v.as_str())
+                                        {
+                                            if !is_in_thinking_phase {
+                                                is_in_thinking_phase = true;
+                                                let _ = app.emit("agent-stream", StreamEvent {
+                                                    event_type: "status".to_string(),
+                                                    content: "thinking".to_string(),
+                                                });
                                             }
-                                            if let Some(func) = call.get("function") {
-                                                if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
-                                                    entry.1.push_str(name);
+                                            assistant_thinking.push_str(reasoning_chunk);
+                                            let _ = app.emit("agent-stream", StreamEvent {
+                                                event_type: "thinking".to_string(),
+                                                content: reasoning_chunk.to_string(),
+                                            });
+                                        }
+
+                                        // 正文内容增量
+                                        if let Some(chunk_text) = delta.get("content").and_then(|v| v.as_str()) {
+                                            if is_in_thinking_phase {
+                                                is_in_thinking_phase = false;
+                                                let _ = app.emit("agent-stream", StreamEvent {
+                                                    event_type: "status".to_string(),
+                                                    content: "answering".to_string(),
+                                                });
+                                            }
+                                            assistant_content.push_str(chunk_text);
+                                            let _ = app.emit("agent-stream", StreamEvent {
+                                                event_type: "token".to_string(),
+                                                content: chunk_text.to_string(),
+                                            });
+                                        }
+
+                                        // 工具调用增量
+                                        if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+                                            for call in calls {
+                                                let index = call.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                                let entry = tool_calls_map.entry(index).or_insert((
+                                                    String::new(),
+                                                    String::new(),
+                                                    String::new(),
+                                                ));
+
+                                                if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
+                                                    entry.0.push_str(id);
                                                 }
-                                                if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
-                                                    entry.2.push_str(args);
+                                                if let Some(func) = call.get("function") {
+                                                    if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                                                        entry.1.push_str(name);
+                                                    }
+                                                    if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                                                        entry.2.push_str(args);
+                                                    }
                                                 }
                                             }
                                         }
@@ -290,9 +350,24 @@ impl AgentEngine {
                         }
                     }
                 }
+
+                if !read_failed {
+                    stream_success = true;
+                    successful_model = try_model.clone();
+                    break;
+                }
             }
 
-            // 处理 <think> 标签式思考 (MiniMax/开源模型)
+            if !stream_success {
+                let err_msg = format!("所有备选模型均调用失败: {}", last_error_msg);
+                let _ = app.emit("agent-stream", StreamEvent {
+                    event_type: "error".to_string(),
+                    content: err_msg.clone(),
+                });
+                return Err(err_msg);
+            }
+
+            // 处理 <think> 标签格式
             if assistant_thinking.is_empty() && assistant_content.contains("<think>") {
                 if let Some(start) = assistant_content.find("<think>") {
                     if let Some(end) = assistant_content.find("</think>") {
