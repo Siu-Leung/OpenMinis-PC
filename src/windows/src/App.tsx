@@ -37,7 +37,11 @@ import {
   Folder,
   SlidersHorizontal,
   Compass,
-  ArrowRight
+  ArrowRight,
+  Info,
+  Shield,
+  FileCode,
+  Power
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -297,6 +301,22 @@ export default function App() {
       const diag = await invoke<SandboxDiagnostics>("get_sandbox_diagnostics");
       setSandboxDiag(diag);
     } catch (_) {}
+  };
+
+  const handleStartAutoInit = async () => {
+    setShowInitModal(true);
+    setInitPercent(5);
+    setInitCurrentText("准备沙箱配置环境...");
+    setInitLogs(["正在启动 WSL2 Alpine 沙箱自动初始化..."]);
+    setInitError(null);
+
+    try {
+      await invoke("auto_initialize_sandbox");
+      setSandboxReady(true);
+      loadSandboxDiag();
+    } catch (err: any) {
+      setInitError(err?.toString() || "沙箱初始化发生异常");
+    }
   };
 
   const chatEndRef = useRef<HTMLDivElement>(null);
