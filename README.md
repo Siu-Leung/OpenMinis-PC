@@ -1,8 +1,8 @@
 # OpenMinis for Windows
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20(x64)-0078D6.svg?logo=windows&logoColor=white)](#-快速安装与使用)
-[![Release](https://img.shields.io/badge/Release-v1.13.0--exp-brightgreen.svg?logo=github)](https://github.com/Siu-Leung/OpenMinis/releases/tag/v1.13.0-windows-exp)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20(x64)-0078D6.svg?logo=windows&logoColor=white)](#-下载与安装使用)
+[![Release](https://img.shields.io/badge/Release-v1.13.0.1-brightgreen.svg?logo=github)](https://github.com/Siu-Leung/OpenMinis/releases/tag/v1.13.0.1)
 [![Build Status](https://img.shields.io/badge/CI-GitHub%20Actions%20Passed-success.svg?logo=githubactions&logoColor=white)](https://github.com/Siu-Leung/OpenMinis/actions)
 
 > **⚠️ 声明 / Disclaimer**  
@@ -75,13 +75,13 @@
 
 所有产物均由 GitHub Actions 自动化编译通过：
 
-👉 **[前往 GitHub Releases 下载最新版 (v1.13.0-windows-exp)](https://github.com/Siu-Leung/OpenMinis/releases/tag/v1.13.0-windows-exp)**
+👉 **[前往 GitHub Releases 查看与下载最新版本 (v1.13.0.1)](https://github.com/Siu-Leung/OpenMinis/releases/tag/v1.13.0.1)**
 
 | 安装包文件 | 大小 | 说明 | 快速直链 |
 | :--- | :---: | :--- | :--- |
-| **`OpenMinis_1.13.0_x64-setup.exe`** | **~3.5 MB** | **标准安装向导版（强烈推荐）** | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0-windows-exp/OpenMinis_1.13.0_x64-setup.exe) |
-| **`OpenMinis_1.13.0_x64_en-US.msi`** | **~5.1 MB** | Windows 原生 MSI 安装程序 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0-windows-exp/OpenMinis_1.13.0_x64_en-US.msi) |
-| **`openminis-windows.exe`** | **~13.8 MB** | 绿色单文件便携免安装版，双击即跑 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0-windows-exp/openminis-windows.exe) |
+| **`OpenMinis_1.13.0.1_x64-setup.exe`** | **3.67 MB** | **标准安装向导版（强烈推荐）** | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0.1/OpenMinis_1.13.0.1_x64-setup.exe) |
+| **`OpenMinis_1.13.0.1_x64_en-US.msi`** | **5.34 MB** | Windows 原生 MSI 安装程序 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0.1/OpenMinis_1.13.0.1_x64_en-US.msi) |
+| **`openminis-windows-v1.13.0.1.exe`** | **14.56 MB** | 绿色单文件便携免安装版，双击即跑 | [点击直接下载](https://github.com/Siu-Leung/OpenMinis/releases/download/v1.13.0.1/openminis-windows-v1.13.0.1.exe) |
 
 ### 2. 沙箱环境初始化 (仅首次运行需要)
 
