@@ -1,7 +1,7 @@
 [package]
 name = "openminis-windows"
-version = "1.13.2"
-description = "OpenMinis Windows Desktop (v1.13.0.3) - 私人用极度不稳定 Aicoding 改"
+version = "1.13.3"
+description = "OpenMinis Windows Desktop (v1.13.0.4) - 私人用极度不稳定 Aicoding 改"
 authors = ["Siu-Leung", "OpenMinis Contributors"]
 edition = "2021"
 

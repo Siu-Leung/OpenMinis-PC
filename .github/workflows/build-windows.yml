@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.3 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.3_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.3_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.3.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.4 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.4_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.4_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.4.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,20 +74,21 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.3
+      - name: Update GitHub Release v1.13.0.4
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.3 (Exp - 私人用极度不稳定 Aicoding 改)
-          tag_name: v1.13.0.3
+          name: OpenMinis Windows v1.13.0.4 (Exp - 私人用极度不稳定 Aicoding 改)
+          tag_name: v1.13.0.4
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.3 (多模态图文输入 + 多供应商管理 + 思考模式与强度 + MCP 扩展)
+            ### 📦 OpenMinis for Windows v1.13.0.4 (完整原生文件拖拽 + 图文混排 + 多供应商 + 深度思考链 + MCP)
             > **⚠️ 备注：私人用极度不稳定 Aicoding 改**
             
-            - **思考链与强度调节**：流式解析 reasoning_content / <think>，折叠卡片展示思考过程，支持 OFF/Low/Med/High/Max
-            - **回复与输入中状态**：动态脉冲动画与状态提示，彻底告别盲等
-            - **图文混排联合发送**：输入框支持同时输入文字与附带文件/图片，管道流式安全写入沙箱
-            - **多供应商与偏好分离**：独立管理 OpenAI、DeepSeek、Claude、SiliconFlow、Ollama 等，各自独立 Base URL 与 Key
-            - **MCP 扩展协议管理**：支持集成 Stdio / SSE 外部 MCP 服务与工具
+            - **原生文件拖拽彻底打通**：通过 Tauri 原生 `onDragDropEvent` 拦截 Windows Explorer 拖入事件，直接读取系统文件并流式写入沙箱
+            - **思考链流式解析**：支持实时显示思考进度与耗时计时器，支持思考强度调节 (OFF/Low/Med/High/Max)
+            - **动态回复指示器**：发送后即刻展示脉冲动画，彻底告别假死盲等感
+            - **图文混排联合发送**：支持输入文字同时附带文件/图片，一并提交给大模型分析
+            - **独立多供应商体系**：DeepSeek、OpenAI、Claude、SiliconFlow、Ollama 并存，一键自动拉取模型列表
+            - **MCP 扩展协议管理**：支持管理外部 Stdio / SSE MCP 服务与注册工具
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

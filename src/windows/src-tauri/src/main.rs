@@ -46,6 +46,81 @@ async fn auto_initialize_sandbox(app: AppHandle, state: State<'_, AppState>) -> 
     state.sandbox.auto_initialize(&app).await
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFileImportResult {
+    pub id: String,
+    pub name: String,
+    pub is_media: bool,
+    pub size_str: String,
+    pub data_url: String,
+}
+
+#[tauri::command]
+async fn import_local_files_by_path(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<LocalFileImportResult>, String> {
+    let mut results = Vec::new();
+
+    for path_str in paths {
+        let p = std::path::Path::new(&path_str);
+        if !p.exists() || !p.is_file() {
+            continue;
+        }
+
+        let file_name = p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let ext = p.extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+
+        let is_media = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg");
+
+        let bytes = std::fs::read(p)
+            .map_err(|e| format!("读取文件 {} 失败: {}", file_name, e))?;
+
+        let size = bytes.len();
+        let size_str = if size > 1024 * 1024 {
+            format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{} KB", (size + 1023) / 1024)
+        };
+
+        let data_url = if is_media {
+            let mime = match ext.as_str() {
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                "svg" => "image/svg+xml",
+                _ => "image/png",
+            };
+            format!("data:{};base64,{}", mime, sandbox::base64_encode(&bytes))
+        } else {
+            String::new()
+        };
+
+        let clean_name = file_name.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "_");
+        let target_dir = if is_media { "/var/minis/attachments" } else { "/var/minis/workspace" };
+        let target_path = format!("{}/{}", target_dir, clean_name);
+        let _ = state.sandbox.write_sandbox_bytes(&target_path, &bytes, false).await;
+
+        results.push(LocalFileImportResult {
+            id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
+            name: file_name,
+            is_media,
+            size_str,
+            data_url,
+        });
+    }
+
+    Ok(results)
+}
+
 #[tauri::command]
 async fn upload_chat_attachment(
     state: State<'_, AppState>,
@@ -327,6 +402,7 @@ fn main() {
             check_sandbox_status,
             auto_initialize_sandbox,
             upload_chat_attachment,
+            import_local_files_by_path,
             execute_sandbox_shell,
             run_agent_turn,
             open_sandbox_dir,

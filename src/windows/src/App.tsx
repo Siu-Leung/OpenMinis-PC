@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   PanelLeft,
   Plus,
@@ -176,6 +177,7 @@ export default function App() {
 
   // 输入框待发附件
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 折叠卡片控制
@@ -251,10 +253,43 @@ export default function App() {
       setInitLogs(prev => [...prev, `❌ 错误: ${event.payload}`]);
     });
 
+    // 监听 Windows 资源管理器原生文件拖拽
+    let unlistenWebviewDrop: (() => void) | undefined;
+    try {
+      getCurrentWebview().onDragDropEvent(async (event) => {
+        if (event.payload.type === "drop") {
+          setIsDraggingOver(false);
+          const paths = event.payload.paths;
+          if (paths && paths.length > 0) {
+            handleImportFilePaths(paths);
+          }
+        } else if (event.payload.type === "enter" || event.payload.type === "over") {
+          setIsDraggingOver(true);
+        } else if (event.payload.type === "leave") {
+          setIsDraggingOver(false);
+        }
+      }).then(fn => { unlistenWebviewDrop = fn; });
+    } catch (_) {}
+
+    const unlistenDragDrop = listen<any>("tauri://drag-drop", (event) => {
+      setIsDraggingOver(false);
+      const paths = event.payload?.paths;
+      if (paths && paths.length > 0) {
+        handleImportFilePaths(paths);
+      }
+    });
+
+    const unlistenDragEnter = listen<any>("tauri://drag-enter", () => setIsDraggingOver(true));
+    const unlistenDragLeave = listen<any>("tauri://drag-leave", () => setIsDraggingOver(false));
+
     return () => {
       unlistenStream.then(un => un());
       unlistenInitStep.then(un => un());
       unlistenInitErr.then(un => un());
+      if (unlistenWebviewDrop) unlistenWebviewDrop();
+      unlistenDragDrop.then(un => un());
+      unlistenDragEnter.then(un => un());
+      unlistenDragLeave.then(un => un());
       if (thinkingTimerRef.current) clearInterval(thinkingTimerRef.current);
     };
   }, []);
@@ -275,6 +310,15 @@ export default function App() {
       thinkingTimerRef.current = null;
     }
   }, [agentStatus]);
+
+  const handleImportFilePaths = async (paths: string[]) => {
+    try {
+      const imported = await invoke<AttachmentItem[]>("import_local_files_by_path", { paths });
+      setAttachments(prev => [...prev, ...imported]);
+    } catch (err) {
+      console.error("导入拖拽文件失败:", err);
+    }
+  };
 
   const saveProviders = (newProviders: Provider[]) => {
     setProviders(newProviders);
@@ -576,8 +620,21 @@ export default function App() {
     <div 
       onDrop={handleDrop}
       onDragOver={e => e.preventDefault()}
-      className="flex h-screen w-screen bg-[#000000] text-[#FFFFFF] font-sans antialiased overflow-hidden select-none"
+      className="flex h-screen w-screen bg-[#000000] text-[#FFFFFF] font-sans antialiased overflow-hidden select-none relative"
     >
+      {/* 拖拽文件进入悬浮提示框 */}
+      {isDraggingOver && (
+        <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-8 border-2 border-dashed border-[#0A84FF] rounded-2xl m-3 pointer-events-none transition-all">
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-[#0A84FF]/20 flex items-center justify-center text-[#0A84FF]">
+              <Plus className="w-7 h-7" />
+            </div>
+            <div className="text-base font-semibold text-white">松开鼠标，将文件附加到输入框</div>
+            <div className="text-xs text-[#8E8E93]">支持拖入图片直接多模态视觉分析，支持代码、文档与数据集直接写入沙箱</div>
+          </div>
+        </div>
+      )}
+
       <input
         ref={fileInputRef}
         type="file"
