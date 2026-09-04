@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ProviderManager } from "./components/ProviderManager";
+import { ModelGroupManager } from "./components/ModelGroupManager";
+import { MarkdownImage } from "./components/MarkdownImage";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -434,6 +436,7 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; session: SessionRecord } | null>(null);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState<string>("");
+  const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
 
   // 拖拽文件状态 (Drag & Drop)
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -624,6 +627,23 @@ export default function App() {
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [soulConfig, setSoulConfig] = useState<SoulConfig>({ name: "Minis", instruction: "", active: true });
   const [mountedFolders, setMountedFolders] = useState<MountedFolderItem[]>([]);
+  const handlePickFolder = async () => {
+    try {
+      const picked = await invoke<string | null>("pick_folder");
+      if (picked) {
+        setNewMountHost(picked);
+        if (!newMountName.trim()) {
+          const segments = picked.replace(/\\+/g, "/").split("/").filter(Boolean);
+          const folderName = segments[segments.length - 1] || "folder";
+          setNewMountName(folderName);
+        }
+      }
+    } catch (err) {
+      console.error("选择文件夹失败:", err);
+      alert(`打开文件夹选择器失败: ${err}`);
+    }
+  };
+
   const [newMountHost, setNewMountHost] = useState("");
   const [newMountName, setNewMountName] = useState("");
 
@@ -723,15 +743,35 @@ export default function App() {
       getCurrentWebview().onDragDropEvent(async (event) => {
         if (event.payload.type === "drop") {
           setIsDraggingOver(false);
+          setIsDraggingFile(false);
           const paths = event.payload.paths;
           if (paths && paths.length > 0) handleImportFilePaths(paths);
         } else if (event.payload.type === "enter" || event.payload.type === "over") {
           setIsDraggingOver(true);
+          setIsDraggingFile(true);
         } else if (event.payload.type === "leave") {
           setIsDraggingOver(false);
+          setIsDraggingFile(false);
         }
       }).then(fn => { unlistenWebviewDrop = fn; });
     } catch (_) {}
+
+    listen<any>("tauri://drag-enter", () => {
+      setIsDraggingOver(true);
+      setIsDraggingFile(true);
+    });
+    listen<any>("tauri://drag-leave", () => {
+      setIsDraggingOver(false);
+      setIsDraggingFile(false);
+    });
+    listen<any>("tauri://drag-drop", async (event) => {
+      setIsDraggingOver(false);
+      setIsDraggingFile(false);
+      const paths = event.payload?.paths;
+      if (paths && Array.isArray(paths) && paths.length > 0) {
+        handleImportFilePaths(paths);
+      }
+    });
 
     return () => {
       unlistenPromise.then(unlisten => unlisten());
@@ -836,9 +876,19 @@ export default function App() {
   const handleImportFilePaths = async (paths: string[]) => {
     try {
       const imported = await invoke<AttachmentItem[]>("import_local_files_by_path", { paths });
-      setAttachments(prev => [...prev, ...imported]);
+      if (imported && imported.length > 0) {
+        setAttachments(prev => [...prev, ...imported]);
+        const refs = imported
+          .map(item => {
+            const p = item.isMedia ? `/var/minis/attachments/${item.name}` : `/var/minis/workspace/${item.name}`;
+            return `[已放入沙箱: ${p}]`;
+          })
+          .join("\n");
+        setInput(prev => prev ? `${prev}\n${refs}` : `请帮我分析这些文件：\n${refs}`);
+      }
     } catch (err) {
       console.error("导入文件失败:", err);
+      alert(`导入本地文件失败: ${err}`);
     }
   };
 
@@ -1580,7 +1630,7 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Markdown 正文内容 (支持 KaTeX LaTeX 数学公式与可运行代码块) */}
+                  {/* Markdown 正文内容 (支持 KaTeX LaTeX 数学公式、图片/快照与可运行代码块) */}
                   <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5]">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm, remarkMath]}
@@ -1597,11 +1647,39 @@ export default function App() {
                               {children}
                             </code>
                           );
+                        },
+                        img({ src, alt, ...props }: any) {
+                          return <MarkdownImage src={src} alt={alt} {...props} />;
                         }
                       }}
                     >
                       {msg.content}
                     </ReactMarkdown>
+                  </div>
+
+                  {/* 答案便捷操作条 (一键复制全文 + 状态反馈) */}
+                  <div className="flex items-center gap-2 pt-1 select-none">
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(msg.content);
+                        setCopiedMessageIdx(i);
+                        setTimeout(() => setCopiedMessageIdx(null), 2000);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition text-[11px] font-semibold text-[#8E8E93] hover:text-black dark:hover:text-white"
+                      title="复制回答全文到剪贴板"
+                    >
+                      {copiedMessageIdx === i ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-[#34C759]" />
+                          <span className="text-[#34C759]">已复制</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>复制回答</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 </div>
               );
@@ -1639,6 +1717,9 @@ export default function App() {
                               {children}
                             </code>
                           );
+                        },
+                        img({ src, alt, ...props }: any) {
+                          return <MarkdownImage src={src} alt={alt} {...props} />;
                         }
                       }}
                     >
@@ -2309,13 +2390,24 @@ export default function App() {
               <div className="p-3.5 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-2.5">
                 <div className="font-semibold text-sm text-black dark:text-white">添加新挂载 (Windows → 沙箱)</div>
                 <div className="space-y-2">
-                  <input
-                    type="text"
-                    placeholder="Windows 绝对路径 (例如: D:\Projects 或 C:\Users\...\Notes)"
-                    value={newMountHost}
-                    onChange={e => setNewMountHost(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white outline-none"
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      placeholder="Windows 绝对路径 (例如: D:\Projects 或 C:\Users\...\Notes)"
+                      value={newMountHost}
+                      onChange={e => setNewMountHost(e.target.value)}
+                      className="flex-1 px-3 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white outline-none text-xs font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={handlePickFolder}
+                      className="px-3.5 py-2 rounded-xl bg-[#0A84FF] text-white font-semibold text-xs hover:opacity-90 transition flex items-center gap-1.5 shrink-0 shadow-sm"
+                      title="打开 Windows 原生文件夹选择器"
+                    >
+                      <Folder className="w-4 h-4" />
+                      <span>选择文件夹</span>
+                    </button>
+                  </div>
                   <input
                     type="text"
                     placeholder="沙箱挂载别名 (例如: Projects，将在沙箱 /var/minis/mounts/Projects 可见)"
@@ -2406,91 +2498,19 @@ export default function App() {
       )}
 
       {settingsView === "model_groups" && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
-          <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
-            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
-              <div className="flex items-center gap-3">
-                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                <h2 className="text-lg font-bold text-black dark:text-white">模型分组</h2>
-              </div>
-              <button
-                onClick={() => {
-                  const newG: ModelGroupItem = {
-                    id: `group-${Date.now().toString(36)}`,
-                    name: "新分组",
-                    is_primary: modelGroupsState.groups.length === 0,
-                    fallback_models: allAvailableModels.slice(0, 3),
-                    description: "自定义回退调度组"
-                  };
-                  const next = { ...modelGroupsState, groups: [...modelGroupsState.groups, newG] };
-                  setModelGroupsState(next);
-                  invoke("save_model_groups_state", { stateData: next });
-                }}
-                className="text-black dark:text-white p-1"
-              >
-                <Plus className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div>
-                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">分组</div>
-                {modelGroupsState.groups.length === 0 ? (
-                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-6 border border-[#E5E5EA] dark:border-[#2C2C2E] text-center text-xs text-[#8E8E93]">
-                    暂无模型分组，请点击右上角 <Plus className="w-4 h-4 inline" /> 创建
-                  </div>
-                ) : (
-                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-2 divide-y divide-[#2C2C2E]">
-                    {modelGroupsState.groups.map(g => (
-                      <div key={g.id} className="flex items-center justify-between pt-2">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-base text-black dark:text-white">{g.name}</span>
-                            {g.is_primary && (
-                              <span className="text-[11px] bg-[#007AFF]/15 text-[#007AFF] px-2 py-0.5 rounded-full font-medium">Primary</span>
-                            )}
-                          </div>
-                          <div className="text-xs text-[#8E8E93]">回退 · {g.fallback_models.length} models</div>
-                        </div>
-                        <ChevronRight className="w-5 h-5 text-[#8E8E93]" />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">Defaults</div>
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-3 text-xs">
-                  <div>
-                    <label className="block text-[#8E8E93] mb-1">Default Primary</label>
-                    <select
-                      value={modelGroupsState.defaults.default_primary_group}
-                      onChange={e => {
-                        const val = e.target.value;
-                        const next = { ...modelGroupsState, defaults: { ...modelGroupsState.defaults, default_primary_group: val } };
-                        setModelGroupsState(next);
-                        invoke("save_model_groups_state", { stateData: next });
-                      }}
-                      className="w-full bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-2 text-black dark:text-white font-medium focus:outline-none"
-                    >
-                      <option value="无">无</option>
-                      {modelGroupsState.groups.map(g => (
-                        <option key={g.id} value={g.name}>{g.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ModelGroupManager
+          state={modelGroupsState}
+          providers={providers}
+          onSaveState={nextState => {
+            setModelGroupsState(nextState);
+            invoke("save_model_groups_state", { stateData: nextState });
+          }}
+          onClose={() => setSettingsView("root")}
+        />
       )}
 
       {/* =========================================================================
-          6. Token 用量仪表盘 (纯净真实 0 统计)
+          视图 3: Token 用量仪表盘
       ========================================================================= */}
       {settingsView === "usage" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
@@ -2999,7 +3019,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.9 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.10 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3068,7 +3088,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.9 (Windows 测试版)
+                  当前版本：1.13.0.10 (Windows 测试版)
                 </div>
               </div>
             </div>

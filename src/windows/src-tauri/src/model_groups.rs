@@ -5,12 +5,33 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GroupModelEntry {
+    pub model: String,
+    #[serde(default)]
+    pub provider_label: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelGroupItem {
     pub id: String,
     pub name: String,
     pub is_primary: bool,
+    #[serde(default)]
+    pub routing_strategy: Option<String>, // "fallback" | "load_balance"
+    #[serde(default)]
+    pub fallback_condition: Option<String>, // "default" | "always"
     pub fallback_models: Vec<String>,
+    #[serde(default)]
+    pub models_detail: Vec<GroupModelEntry>,
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
+    #[serde(default)]
+    pub thinking_effort: Option<String>, // "low" | "medium" | "high" | "max"
+    #[serde(default)]
+    pub limit_context: Option<bool>,
+    #[serde(default)]
+    pub max_context: Option<String>, // "32K" | "64K" | "128K" | "unlimited"
     pub description: Option<String>,
 }
 

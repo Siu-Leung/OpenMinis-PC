@@ -127,6 +127,11 @@ async fn import_local_files_by_path(
         let target_path = format!("{}/{}", target_dir, clean_name);
         let _ = state.sandbox.write_sandbox_bytes(&target_path, &bytes, false).await;
 
+        let minis_home = sandbox::SandboxManager::get_minis_home();
+        let host_target = if is_media { minis_home.join("attachments") } else { minis_home.join("workspace") };
+        let _ = std::fs::create_dir_all(&host_target);
+        let _ = std::fs::write(host_target.join(&clean_name), &bytes);
+
         results.push(LocalFileImportResult {
             id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
             name: file_name,
@@ -149,6 +154,10 @@ async fn upload_chat_attachment(
     let clean_name = name.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "_");
     let target_dir = if is_media { "/var/minis/attachments" } else { "/var/minis/workspace" };
     let target_path = format!("{}/{}", target_dir, clean_name);
+    let minis_home = sandbox::SandboxManager::get_minis_home();
+    let host_target = if is_media { minis_home.join("attachments") } else { minis_home.join("workspace") };
+    let _ = std::fs::create_dir_all(&host_target);
+    let _ = std::fs::write(host_target.join(&clean_name), &bytes);
 
     let raw_b64 = if let Some(idx) = base64_data.find(',') {
         &base64_data[idx + 1..]
@@ -531,6 +540,85 @@ async fn restart_sandbox(state: State<'_, AppState>) -> Result<sandbox::SandboxD
     state.sandbox.restart_sandbox().await
 }
 
+#[tauri::command]
+async fn pick_folder() -> Result<Option<String>, String> {
+    let script = r#"
+        Add-Type -AssemblyName System.Windows.Forms
+        $f = New-Object System.Windows.Forms.FolderBrowserDialog
+        $f.Description = "选择要挂载到沙箱的本地文件夹"
+        $f.ShowNewFolderButton = $true
+        if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            Write-Output $f.SelectedPath
+        }
+    "#;
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().map_err(|e| format!("打开文件夹选择器失败: {}", e))?;
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(path_str))
+    }
+}
+
+#[tauri::command]
+async fn read_image_data_url(path_or_url: String) -> Result<String, String> {
+    if path_or_url.starts_with("data:image/") {
+        return Ok(path_or_url);
+    }
+    let minis_home = sandbox::SandboxManager::get_minis_home();
+    let clean = path_or_url
+        .trim_start_matches("minis://")
+        .trim_start_matches("/var/minis/")
+        .trim_start_matches('\\')
+        .trim_start_matches('/');
+
+    let resolved_path = if clean.starts_with("attachments") {
+        minis_home.join(clean)
+    } else if clean.starts_with("workspace") {
+        minis_home.join(clean)
+    } else if clean.starts_with("shared") {
+        minis_home.join(clean)
+    } else {
+        let p = std::path::PathBuf::from(&path_or_url);
+        if p.exists() {
+            p
+        } else {
+            minis_home.join("attachments").join(&clean)
+        }
+    };
+
+    if !resolved_path.exists() {
+        return Err(format!("图片文件不存在: {}", resolved_path.display()));
+    }
+
+    let bytes = std::fs::read(&resolved_path)
+        .map_err(|e| format!("读取图片失败: {}", e))?;
+    
+    let ext = resolved_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    };
+
+    let b64 = sandbox::base64_encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
 // === 定时任务调度器 ===
 
 #[tauri::command]
@@ -688,6 +776,8 @@ fn main() {
             list_mounted_folders,
             add_mounted_folder,
             remove_mounted_folder,
+            pick_folder,
+            read_image_data_url,
             // Native Offloads
             send_native_notification,
             get_system_info,

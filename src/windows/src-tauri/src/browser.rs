@@ -124,8 +124,11 @@ print(text[:10000])
                 // 真实调用 Edge 生成网页像素级截图 (外层套 25 秒硬超时)
                 let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
                 let filename = format!("screenshot_{}.png", timestamp);
-                let wsl_path = format!("/var/minis/attachments/{}", filename);
-                let unc_host_path = format!(r"\\wsl$\{}\var\minis\attachments\{}", self.sandbox.distro_name, filename);
+                let minis_home = crate::sandbox::SandboxManager::get_minis_home();
+                let att_dir = minis_home.join("attachments");
+                let _ = std::fs::create_dir_all(&att_dir);
+                let target_shot_path = att_dir.join(&filename);
+                let target_shot_str = target_shot_path.to_string_lossy().to_string();
 
                 let _ = self.sandbox.execute_shell("mkdir -p /var/minis/attachments", 5).await;
 
@@ -133,7 +136,7 @@ print(text[:10000])
                 edge_shot_cmd.args([
                     "--headless=new",
                     "--disable-gpu",
-                    &format!("--screenshot={}", unc_host_path),
+                    &format!("--screenshot={}", target_shot_str),
                     "--window-size=1280,800",
                     "--timeout=15000",
                     &target_url,
@@ -156,9 +159,12 @@ print(text[:10000])
                         let fallback_cmd = format!(
                             "python3 -c \"
 with open('{path}', 'wb') as f:
-    f.write(b'\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01\\x08\\x06\\x00\\x00\\x00\\x1f\\x15c4\\x00\\x00\\x00\\nIDATx\\x9cc\\x00\\x01\\x00\\x00\\x05\\x00\\x01\\r\\n-\\xb4\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82')
+    f.write(b'\\x89PNG\
+\\n\\x1a\\n\\x00\\x00\\x00\
+IHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01\\x08\\x06\\x00\\x00\\x00\\x1f\\x15c4\\x00\\x00\\x00\\nIDATx\\x9cc\\x00\\x01\\x00\\x00\\x05\\x00\\x01\
+\\n-\\xb4\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82')
 \"",
-                            path = wsl_path
+                            path = target_shot_str
                         );
                         let _ = self.sandbox.execute_shell(&fallback_cmd, 10).await;
                         BrowserActionResult {
