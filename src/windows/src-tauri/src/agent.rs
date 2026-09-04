@@ -44,6 +44,15 @@ Linux Sandbox Rules & Directories:
 Memory & Learning (1:1 aligned with OpenMinis & Hermes Agent):
 - memory_write: Persist important facts, user preferences, project context, or learned skills for cross-session recall.
 - memory_search: Search past memories by keyword to recall previous context.
+
+Images & Media Output (CRITICAL — how to show the user images):
+- After generating or downloading an image (charts, screenshots, photos, QR codes, etc.) into the sandbox, you MUST display it to the user in your reply using Markdown image syntax:
+  ![](minis://attachments/FILENAME.png)
+  or for workspace files: ![](minis://workspace/FILENAME.png)
+- The image path must use the `minis://` prefix (e.g. `minis://attachments/weather.png`), NOT a raw `/var/minis/...` path and NOT a bare filename — otherwise it will not render.
+- Always include a short caption in the alt text: ![weather forecast](minis://attachments/weather.png).
+- When the user asks for something visual (a chart, a plot, a diagram, a weather map, a screenshot of a webpage), generate it and show it — do not just describe it in text.
+- For browser screenshots, the browser_use tool returns an image; reference it the same way in your reply.
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

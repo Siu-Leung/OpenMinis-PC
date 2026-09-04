@@ -3,22 +3,106 @@
 @tailwind components;
 @tailwind utilities;
 
+/* =========================================================================
+   OpenMinis-PC 统一设计规范 (Design Tokens)
+   对标原版 ChatColors.kt + Theme.kt 的权威值, 1:1 语义化映射
+   ========================================================================= */
+
 :root {
-  --accent-color: #0A84FF;
+  /* --- 强调色 (Accent) --- */
+  /* 原版 iOS AccentColor.colorset: light #3686EE / dark #5490E4 */
+  --accent-color: #0A84FF;              /* 用户可选强调色, 默认 iOS 深色蓝 */
+
+  /* --- 浅色主题 (Light) --- */
+  --bg: #FFFFFF;                         /* background */
+  --bg-secondary: #F2F2F7;               /* secondaryBg / grouped page */
+  --bg-card: #FFFFFF;                    /* grouped card */
+  --bg-card-elevated: #F7F7FA;
+  --bg-input: #FFFFFF;
+  --bg-tool: #F2F2F7;                    /* toolBg */
+  --bg-user-bubble: #1E787880;           /* userBubble 半透明灰蓝 */
+  --bg-code: #000000;                    /* codeBlockBg */
+  --bg-inline-code: #F2F2F7;
+  --text-primary: #000000;
+  --text-secondary: #993C3C43;
+  --text-tertiary: #4D3C3C43;
+  --text-code: #34C759;                  /* codeBlockText 浅色用绿 */
+  --text-inline-code: #FF9500;           /* inlineCodeText 橙 */
+  --text-link: #007AFF;
+  --text-thinking: #007AFF;
+  --border: #D1D1D6;                     /* outline */
+  --separator: #4D3C3C43;
+  --table-border: #1F000000;
+  --send-button: #000000;
+  --send-button-disabled: #2E3C3C43;
+  --fab-accent: #B7AF96;                 /* 新建聊天 FAB 暖米色 */
+  --blockquote-bar: #80FF9500;
+  --warning-bg: #14FF9500;
+  --warning-text: #73000000;
+
+  /* --- 圆角 (Shapes, 对标 Theme.kt) --- */
+  --radius-xs: 12px;
+  --radius-sm: 12px;
+  --radius-md: 20px;
+  --radius-lg: 24px;
+  --radius-xl: 28px;                     /* 对话框/底部弹窗 */
 }
 
-/* 全局应用 accent 强调色 */
-.bg-accent-theme {
-  background-color: var(--accent-color) !important;
+/* 深色主题 (Dark) — 对标 DarkChatPalette + DarkColorScheme */
+.dark {
+  --bg: #000000;
+  --bg-secondary: #26262A;
+  --bg-card: #1C1C1E;
+  --bg-card-elevated: #2C2C2E;
+  --bg-input: #2C2C30;
+  --bg-tool: #3A3A3F;
+  --bg-user-bubble: #2F3A5C;             /* 不透明蓝灰 */
+  --bg-code: #262626;
+  --bg-inline-code: #34343A;
+  --text-primary: #FFFFFF;
+  --text-secondary: #99EBEBF5;
+  --text-tertiary: #4DEBEBF5;
+  --text-code: #8CF38C;                  /* 深色代码文字是浅绿, 不是 #34C759 */
+  --text-inline-code: #FF9F0A;           /* 橙 */
+  --text-link: #0A84FF;
+  --text-thinking: #0A84FF;
+  --border: #38383A;
+  --separator: #99545458;
+  --table-border: #38383A;
+  --send-button: #FFFFFF;
+  --send-button-disabled: #2EEBEBF5;
+  --fab-accent: #504C42;
+  --blockquote-bar: #80FF9F0A;
+  --warning-bg: #14FF9F0A;
+  --warning-text: #73FFFFFF;
 }
 
-.text-accent-theme {
-  color: var(--accent-color) !important;
-}
+/* =========================================================================
+   语义化工具类 (对标原版 ChatColors 语义名, 替代散落的硬编码)
+   ========================================================================= */
+.bg-app        { background-color: var(--bg) !important; }
+.bg-app-secondary { background-color: var(--bg-secondary) !important; }
+.bg-app-card   { background-color: var(--bg-card) !important; }
+.bg-app-tool   { background-color: var(--bg-tool) !important; }
+.bg-user-bubble { background-color: var(--bg-user-bubble) !important; }
+.bg-code       { background-color: var(--bg-code) !important; }
+.bg-inline-code { background-color: var(--bg-inline-code) !important; }
 
-.border-accent-theme {
-  border-color: var(--accent-color) !important;
-}
+.text-app       { color: var(--text-primary) !important; }
+.text-app-secondary { color: var(--text-secondary) !important; }
+.text-app-tertiary  { color: var(--text-tertiary) !important; }
+.text-code      { color: var(--text-code) !important; }
+.text-inline-code   { color: var(--text-inline-code) !important; }
+.text-app-link  { color: var(--text-link) !important; }
+.text-thinking  { color: var(--text-thinking) !important; }
+
+.border-app     { border-color: var(--border) !important; }
+.border-separator { border-color: var(--separator) !important; }
+
+/* --- 强调色映射 (用户可选) --- */
+.bg-accent-theme { background-color: var(--accent-color) !important; }
+.text-accent-theme { color: var(--accent-color) !important; }
+.border-accent-theme { border-color: var(--accent-color) !important; }
 
 /* 将全局硬编码的 iOS 蓝色主色调统一映射到用户选择的强调色 */
 .bg-\[\#007AFF\] { background-color: var(--accent-color) !important; }
@@ -36,6 +120,7 @@
 .accent-\[\#0A84FF\] { accent-color: var(--accent-color) !important; }
 .accent-\[\#007AFF\] { accent-color: var(--accent-color) !important; }
 
+/* --- 滚动条 --- */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

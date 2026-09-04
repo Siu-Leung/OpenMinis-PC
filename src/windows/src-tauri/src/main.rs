@@ -751,7 +751,7 @@ async fn test_model_multimodal(
     model: String,
 ) -> Result<MultimodalTestResult, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
+        .timeout(std::time::Duration::from_secs(20))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -760,11 +760,11 @@ async fn test_model_multimodal(
     let url = format!("{}/chat/completions", clean_url);
     let start = std::time::Instant::now();
 
-    // 1. 测试纯文本
+    // 1. 测试纯文本连通性
     let text_body = serde_json::json!({
         "model": model,
-        "messages": [{ "role": "user", "content": "1" }],
-        "max_tokens": 1
+        "messages": [{ "role": "user", "content": "reply with the single word: ok" }],
+        "max_tokens": 8
     });
 
     let mut req1 = client.post(&url);
@@ -774,31 +774,49 @@ async fn test_model_multimodal(
     let resp1 = req1.json(&text_body).send().await.map_err(|e| format!("文本测试请求失败: {}", e))?;
     let elapsed = start.elapsed().as_millis() as u64;
     let s1 = resp1.status();
-    let supports_text = s1.is_success() || s1.as_u16() == 429;
+    // 仅真正的成功(2xx)算文本可用; 429/4xx 说明配置有问题
+    let supports_text = s1.is_success();
 
-    // 2. 测试图片多模态 (1x1 transparent PNG)
-    let tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    // 2. 测试图片多模态 (对标原版 VisionGroupResolver 思路: 发纯色图问颜色,
+    //    根据回答是否命中正确答案判断模型是否真的"看到"了图片, 而非只看 HTTP 状态)
+    //    纯红色 64x64 PNG (经 PIL 验证 pixel=(255,0,0,255))
+    let red_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAlElEQVR4nO3QMREAMBDDsPAn/YWhoR60+7zb7mfTAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA3QAVoDdIDWAB2gNUAHaA9DiOHSbdjxEgAAAABJRU5ErkJggg==";
     let vision_body = serde_json::json!({
         "model": model,
         "messages": [{
             "role": "user",
             "content": [
-                { "type": "text", "text": "hi" },
-                { "type": "image_url", "image_url": { "url": tiny_png } }
+                { "type": "text", "text": "What is the color of this image? Answer with only one word (red, green, blue, yellow, or other)." },
+                { "type": "image_url", "image_url": { "url": red_png } }
             ]
         }],
-        "max_tokens": 1
+        "max_tokens": 16
     });
 
     let mut req2 = client.post(&url);
     if !api_key.trim().is_empty() {
         req2 = req2.header("Authorization", format!("Bearer {}", api_key.trim()));
     }
-    let resp2 = req2.json(&vision_body).send().await;
-    let supports_vision = match resp2 {
+    let supports_vision = match req2.json(&vision_body).send().await {
         Ok(r) => {
             let st = r.status();
-            st.is_success() || st.as_u16() == 429
+            if !st.is_success() {
+                // 4xx/5xx: 明确拒绝图片输入或服务异常 → 不支持
+                false
+            } else {
+                // 200: 需验证回答内容是否真的识别出"红色"
+                match r.text().await {
+                    Ok(body) => {
+                        let lower = body.to_lowercase();
+                        // 命中"red"即证明模型真正看到了图片像素
+                        lower.contains("red")
+                            && !lower.contains("cannot see")
+                            && !lower.contains("can't see")
+                            && !lower.contains("no image")
+                    }
+                    Err(_) => false,
+                }
+            }
         }
         Err(_) => false,
     };

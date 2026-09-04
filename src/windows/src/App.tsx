@@ -5,6 +5,7 @@ import { LogsManager } from "./components/LogsManager";
 import { BackupRestoreManager } from "./components/BackupRestoreManager";
 import { UnifiedModelPicker } from "./components/UnifiedModelPicker";
 import { MinisComputer, MinisComputerState } from "./components/MinisComputer";
+import { FloatingToolBar, ToolStepStatus } from "./components/FloatingToolBar";
 import { MarkdownImage } from "./components/MarkdownImage";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -379,6 +380,35 @@ function getToolDisplayInfo(content: string) {
   };
 }
 
+function inferToolType(toolName: string): ToolStepStatus["toolType"] {
+  if (toolName === "shell_execute" || toolName === "open_terminal") return "shell";
+  if (toolName === "browser_use") return "browser";
+  if (toolName === "file_read" || toolName === "file_write" || toolName === "file_edit") return "file";
+  if (toolName === "memory_write" || toolName === "memory_search") return "memory";
+  if (toolName === "clipboard_read" || toolName === "clipboard_write") return "clipboard";
+  if (toolName === "system_notification") return "notification";
+  if (toolName === "system_info") return "info";
+  return "other";
+}
+
+function toolDisplayTitle(toolName: string): string {
+  const map: Record<string, string> = {
+    shell_execute: "执行 Shell 命令",
+    open_terminal: "打开交互终端",
+    browser_use: "浏览网页",
+    file_read: "读取文件",
+    file_write: "写入文件",
+    file_edit: "编辑文件",
+    memory_write: "写入记忆",
+    memory_search: "检索记忆",
+    clipboard_read: "读取剪贴板",
+    clipboard_write: "写入剪贴板",
+    system_notification: "发送通知",
+    system_info: "查询系统信息",
+  };
+  return map[toolName] || toolName;
+}
+
 function groupSessionsByDate(sessions: SessionRecord[]) {
   const groups: { label: string; items: SessionRecord[] }[] = [
     { label: "今天", items: [] },
@@ -514,6 +544,30 @@ export default function App() {
     title: "",
     commandOrUrl: "",
   });
+
+  // 工具执行步骤状态 (对标原版 FloatingToolBar 的 toolBlocks)
+  const [toolSteps, setToolSteps] = useState<ToolStepStatus[]>([]);
+
+  // 小电脑交互回调
+  const handleComputerTakeover = (url: string) => {
+    // 打开内置交互式浏览器，手动处理验证码/登录
+    if (url) {
+      let u = url.trim();
+      if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
+      setBrowserUrl(u);
+      setCurrentNavUrl(u);
+    }
+    setShowBrowserWindow(true);
+  };
+  const handleComputerExpand = () => {
+    // 放大：打开浏览器窗口(若是浏览器)或展开完整终端视图
+    if (computerState.toolType === "browser" && computerState.commandOrUrl) {
+      handleComputerTakeover(computerState.commandOrUrl);
+    }
+  };
+  const handleComputerClose = () => {
+    setComputerState(prev => ({ ...prev, isActive: false, outputSnippet: undefined, previewImageUrl: undefined }));
+  };
 
   // 工具步骤折叠状态 (Turn 级)
   const [expandedToolTurns, setExpandedToolTurns] = useState<{ [turnId: string]: boolean }>({});
@@ -805,6 +859,17 @@ export default function App() {
     localStorage.setItem("openminis_accent_color", accentColor);
   }, [accentColor]);
 
+  // 主题模式同步到 html 根元素 (darkMode: 'class')
+  useEffect(() => {
+    const root = document.documentElement;
+    const isDark = themeMode === "dark"
+      || (themeMode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches)
+      || oledMode; // OLED 模式强制深色
+    root.classList.toggle("dark", isDark);
+    root.classList.toggle("light", !isDark);
+    localStorage.setItem("openminis_theme_mode", themeMode);
+  }, [themeMode, oledMode]);
+
   // 技能、灵魂与外部挂载
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [soulConfig, setSoulConfig] = useState<SoulConfig>({ name: "Minis", instruction: "", active: true });
@@ -897,10 +962,16 @@ export default function App() {
       const { event_type, content } = event.payload;
       if (event_type === "status") {
         setAgentStatus(content);
-        if (content === "answering") setActiveToolName(null);
+        if (content === "answering") {
+          setActiveToolName(null);
+          // 回答阶段收起小电脑
+          setComputerState(prev => ({ ...prev, isActive: false }));
+        }
         if (content === "stopped") {
           setLoading(false);
           setAgentStatus("idle");
+          setComputerState(prev => ({ ...prev, isActive: false }));
+          setToolSteps([]);
         }
       } else if (event_type === "thinking") {
         setAgentStatus("thinking");
@@ -909,9 +980,40 @@ export default function App() {
         setAgentStatus("answering");
         setStreamingText(prev => prev + content);
       } else if (event_type === "tool_start") {
-        setActiveToolName(content.replace("正在调用: ", ""));
+        const toolName = content.replace("正在调用: ", "");
+        setActiveToolName(toolName);
+        // 维护 FloatingToolBar 工具步骤
+        const stepType = inferToolType(toolName);
+        setToolSteps(prev => [...prev, {
+          id: `${toolName}-${Date.now()}`,
+          toolName,
+          title: toolDisplayTitle(toolName),
+          status: "running",
+          toolType: stepType,
+        }]);
+        // 驱动 Minis Computer 画中画小电脑
+        if (toolName === "browser_use") {
+          setComputerState(prev => ({ ...prev, isActive: true, toolType: "browser", title: "浏览网页", commandOrUrl: prev.commandOrUrl || "https://www.baidu.com" }));
+        } else if (toolName === "shell_execute") {
+          setComputerState(prev => ({ ...prev, isActive: true, toolType: "shell", title: "执行命令", commandOrUrl: prev.commandOrUrl || "minis" }));
+        } else if (toolName === "file_read" || toolName === "file_write" || toolName === "file_edit") {
+          setComputerState(prev => ({ ...prev, isActive: true, toolType: "file", title: "文件操作", commandOrUrl: prev.commandOrUrl || toolName }));
+        } else {
+          setComputerState(prev => ({ ...prev, isActive: true, toolType: "other", title: toolName, commandOrUrl: prev.commandOrUrl || toolName }));
+        }
       } else if (event_type === "tool_end") {
         setActiveToolName(null);
+        // 标记最后一个 running step 为 success
+        setToolSteps(prev => {
+          const next = [...prev];
+          for (let i = next.length - 1; i >= 0; i--) {
+            if (next[i].status === "running") {
+              next[i] = { ...next[i], status: "success" };
+              break;
+            }
+          }
+          return next;
+        });
       } else if (event_type === "fallback") {
         setFallbackToast(content);
         setTimeout(() => setFallbackToast(null), 5000);
@@ -1915,6 +2017,10 @@ export default function App() {
             输入栏 (1:1 ChatInputBar：停止按键 + 思考强度快捷切换 + 旋转占位符)
         ========================================================================= */}
         <div className="p-4 bg-gradient-to-t from-white via-white/80 to-transparent dark:from-[#000000] dark:via-[#000000]/80 dark:to-transparent shrink-0">
+          {/* 浮动工具状态栏 (对标原版 FloatingToolBar) */}
+          <FloatingToolBar steps={toolSteps} onOpenDetail={(step) => {
+            if (step.toolType === "browser" && step.commandOrUrl) handleComputerTakeover(step.commandOrUrl);
+          }} />
           <div className="max-w-3xl mx-auto bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-[26px] px-4 py-2.5 flex flex-col gap-2 focus-within:border-[#0A84FF] transition shadow-xl">
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pt-1 border-b border-[#E5E5EA] dark:border-[#2C2C2E] pb-2">
@@ -3543,6 +3649,14 @@ export default function App() {
           <span className="font-semibold">{sandboxRestartToast}</span>
         </div>
       )}
+
+      {/* Minis Computer 实时画中画小电脑 (左下角) */}
+      <MinisComputer
+        computerState={computerState}
+        onTakeover={handleComputerTakeover}
+        onExpand={handleComputerExpand}
+        onClose={handleComputerClose}
+      />
     </div>
   );
 }
