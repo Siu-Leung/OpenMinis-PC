@@ -29,7 +29,7 @@ use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use model_groups::{FullModelGroupsState, ModelGroupManager};
 use mounts::{MountManager, MountedFolderItem};
 use offloads::WindowsOffload;
-use providers::{ProviderManager, ProviderRecord, ProviderSummary};
+use providers::{ProviderManager, ProviderRecord};
 use sandbox::SandboxManager;
 use scheduler::{CronScheduler, ScheduledTask};
 use serde::{Deserialize, Serialize};
@@ -964,6 +964,7 @@ fn main() {
     let soul = Arc::new(SoulManager::new());
     let skills = Arc::new(SkillsManager::new());
     let mounts = Arc::new(MountManager::new(sandbox.distro_name.clone()));
+    let providers = Arc::new(ProviderManager::new());
     let dispatcher = Arc::new(ToolDispatcher::new(sandbox.clone(), browser.clone(), memory.clone(), providers.clone()));
     let agent = Arc::new(AgentEngine::new(
         dispatcher.clone(),
@@ -976,7 +977,6 @@ fn main() {
     let sessions = Arc::new(SessionStore::new());
     let scheduler = Arc::new(CronScheduler::new());
     let mcp = Arc::new(McpManager::new());
-    let providers = Arc::new(ProviderManager::new());
     let _ = memory.ensure_global_exists();
 
     let cron_scheduler_clone = scheduler.clone();
