@@ -658,9 +658,19 @@ export default function App() {
 
             {/* 右上角原生弹出菜单 (1:1 复刻截图 1000143307.jpg 菜单) */}
             {showTopMenu && (
-              <div className="absolute top-14 left-44 w-44 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 text-xs text-[#1C1C1E] dark:text-[#FFFFFF] space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
+              <div className="absolute top-14 left-44 w-48 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 text-xs text-[#1C1C1E] dark:text-[#FFFFFF] space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
                 <button
-                  onClick={() => { setShowTopMenu(false); invoke("launch_interactive_terminal"); }}
+                  onClick={async () => {
+                    setShowTopMenu(false);
+                    try {
+                      await invoke("launch_interactive_terminal");
+                    } catch (err: any) {
+                      if (confirm(`⚠️ 终端唤起失败：${err}\n\n当前 WSL2 沙箱尚未安装或未就绪。是否立即打开沙箱管理中心进行安装？`)) {
+                        loadSandboxDiag();
+                        setSettingsView("rootfs");
+                      }
+                    }
+                  }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left"
                 >
                   <Terminal className="w-4 h-4 text-[#8E8E93]" />
@@ -678,11 +688,14 @@ export default function App() {
                   <span>Rootfs 沙箱管理</span>
                 </button>
                 <button
-                  onClick={() => { setShowTopMenu(false); setShowBrowserWindow(true); }}
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    invoke("open_external_url", { url: "https://cn.bing.com" });
+                  }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left"
                 >
                   <Globe className="w-4 h-4 text-[#0A84FF]" />
-                  <span>打开浏览器</span>
+                  <span>打开浏览器 (默认)</span>
                 </button>
                 <button
                   onClick={() => { setShowTopMenu(false); setSettingsView("browser_settings"); }}
@@ -1240,10 +1253,8 @@ export default function App() {
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
                   </div>
 
-                  <a
-                    href="https://github.com/Siu-Leung/OpenMinis-PC/issues"
-                    target="_blank"
-                    rel="noreferrer"
+                  <div
+                    onClick={() => invoke("open_external_url", { url: "https://github.com/Siu-Leung/OpenMinis-PC/issues" })}
                     className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
                   >
                     <div className="flex items-center gap-3">
@@ -1252,8 +1263,11 @@ export default function App() {
                       </div>
                       <span className="text-sm font-semibold text-black dark:text-white">反馈问题</span>
                     </div>
-                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
-                  </a>
+                    <div className="flex items-center gap-1 text-[#8E8E93]">
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <ChevronRight className="w-4 h-4" />
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1596,10 +1610,10 @@ export default function App() {
             <div className="px-4 py-3 border-b border-[#2C2C2E] flex items-center justify-between bg-[#141416] gap-3">
               <div className="flex items-center gap-2">
                 <Compass className="w-5 h-5 text-[#0A84FF]" />
-                <span className="text-xs font-semibold text-white">内置浏览器 (Edge/WebView2)</span>
+                <span className="text-xs font-semibold text-white">内置浏览器预览</span>
               </div>
 
-              <div className="flex-1 flex items-center gap-2 max-w-lg bg-[#1C1C1E] border border-[#2C2C2E] rounded-xl px-3 py-1">
+              <div className="flex-1 flex items-center gap-2 max-w-md bg-[#1C1C1E] border border-[#2C2C2E] rounded-xl px-3 py-1">
                 <input
                   type="text"
                   value={browserUrl}
@@ -1625,15 +1639,34 @@ export default function App() {
                 </button>
               </div>
 
-              <button onClick={() => setShowBrowserWindow(false)} className="text-[#8E8E93] hover:text-white p-1">
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => invoke("open_external_url", { url: currentNavUrl })}
+                  className="px-3 py-1 bg-[#0A84FF] hover:bg-[#0071E3] text-white text-xs font-medium rounded-lg flex items-center gap-1.5 transition"
+                  title="在系统默认浏览器中打开 (支持所有带安全防内嵌的网站)"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>在系统浏览器打开</span>
+                </button>
+                <button onClick={() => setShowBrowserWindow(false)} className="text-[#8E8E93] hover:text-white p-1">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1 bg-white relative">
+            <div className="flex-1 bg-white relative flex flex-col">
+              <div className="bg-[#FFF3CD] text-[#856404] px-4 py-1.5 text-xs flex items-center justify-between border-b border-[#FFEEBA]">
+                <span>💡 必应、百度等大型网站默认禁止第三方内嵌。如遇下方提示“拒绝连接”，请点击右上角蓝色按钮在系统浏览器中浏览。</span>
+                <button
+                  onClick={() => invoke("open_external_url", { url: currentNavUrl })}
+                  className="underline font-bold text-xs"
+                >
+                  立即在系统浏览器打开
+                </button>
+              </div>
               <iframe
                 src={currentNavUrl}
-                className="w-full h-full border-none"
+                className="w-full flex-1 border-none"
                 title="Minis Web Preview"
               />
             </div>
@@ -1798,6 +1831,43 @@ export default function App() {
                 </div>
               </div>
 
+              {/* 未安装时醒目的安装引导卡片 */}
+              {!sandboxDiag.isInstalled && (
+                <div className="bg-[#007AFF]/10 border border-[#007AFF]/30 p-4 rounded-2xl space-y-3">
+                  <div className="flex items-center gap-2 text-sm font-bold text-[#007AFF]">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>检测到 WSL2 独立沙箱尚未安装</span>
+                  </div>
+                  <p className="text-xs text-[#8E8E93] leading-relaxed">
+                    Minis 需要一个精简的 Alpine Linux 沙箱环境来执行代码与工具。点击下方按钮即可弹出独立控制台窗口自动完成安装配置，实时显示下载和解压过程。
+                  </p>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={async () => {
+                        try {
+                          await invoke("launch_installer_terminal");
+                        } catch (e: any) {
+                          alert("唤起终端失败: " + e);
+                        }
+                      }}
+                      className="flex-1 py-2.5 rounded-xl bg-[#007AFF] hover:bg-[#0062CC] text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
+                    >
+                      <Terminal className="w-4 h-4" />
+                      <span>⚡ 唤起终端窗口可视化安装 (推荐)</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSettingsView("none");
+                        handleStartAutoInit();
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs font-medium text-black dark:text-white"
+                    >
+                      后台向导安装
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* 核心操作区 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">智能维护与工具</div>
@@ -1882,13 +1952,19 @@ export default function App() {
                   </div>
                   <button
                     onClick={async () => {
-                      if (confirm("⚠️ 确定要完全重置并重新安装沙箱吗？当前沙箱内的全部非持久化更改将被清空。")) {
-                        handleStartAutoInit();
+                      if (confirm("⚠️ 确定要完全重置并重新安装沙箱吗？将唤起终端控制台重新下载最新镜像并部署全新实例。")) {
+                        try {
+                          await invoke("launch_installer_terminal");
+                        } catch (e: any) {
+                          setSettingsView("none");
+                          handleStartAutoInit();
+                        }
                       }
                     }}
-                    className="w-full py-2 rounded-xl bg-[#FF453A]/15 hover:bg-[#FF453A]/25 border border-[#FF453A]/30 text-[#FF453A] text-xs font-semibold transition"
+                    className="w-full py-2.5 rounded-xl bg-[#FF453A]/15 hover:bg-[#FF453A]/25 border border-[#FF453A]/30 text-[#FF453A] text-xs font-semibold transition flex items-center justify-center gap-2"
                   >
-                    完全重置并重新安装沙箱 (Reset Rootfs)
+                    <Terminal className="w-4 h-4" />
+                    <span>完全重置并重新安装沙箱 (唤起终端向导)</span>
                   </button>
                 </div>
               </div>
@@ -1919,7 +1995,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.7 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.8 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -1929,11 +2005,9 @@ export default function App() {
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">链接</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#2C2C2E]">
-                  <a
-                    href="https://github.com/Siu-Leung/OpenMinis-PC"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-between p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition"
+                  <div
+                    onClick={() => invoke("open_external_url", { url: "https://github.com/Siu-Leung/OpenMinis-PC" })}
+                    className="flex items-center justify-between p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
@@ -1945,7 +2019,7 @@ export default function App() {
                       <ExternalLink className="w-3.5 h-3.5" />
                       <ChevronRight className="w-4 h-4" />
                     </div>
-                  </a>
+                  </div>
                 </div>
               </div>
 
@@ -1990,7 +2064,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.7 (Windows 测试版)
+                  当前版本：1.13.0.8 (Windows 测试版)
                 </div>
               </div>
             </div>

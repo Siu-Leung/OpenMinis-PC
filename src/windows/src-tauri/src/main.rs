@@ -217,8 +217,86 @@ async fn open_sandbox_rootfs_dir(state: State<'_, AppState>) -> Result<(), Strin
 }
 
 #[tauri::command]
+#[tauri::command]
 fn restart_app(app: AppHandle) {
     app.restart();
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let safe_url = url.trim();
+        if safe_url.starts_with("http://") || safe_url.starts_with("https://") {
+            let _ = std::process::Command::new("rundll32.exe")
+                .args(["url.dll,FileProtocolHandler", safe_url])
+                .spawn();
+            return Ok(());
+        }
+    }
+    Err("仅支持以 http:// 或 https:// 开头的网络链接".to_string())
+}
+
+#[tauri::command]
+fn launch_installer_terminal() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let ps_code = r#"
+$ErrorActionPreference = 'Continue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Write-Host "=====================================================" -ForegroundColor Cyan
+Write-Host "   OpenMinis WSL2 Alpine 沙箱可视化安装配置向导      " -ForegroundColor Cyan
+Write-Host "=====================================================" -ForegroundColor Cyan
+
+$base = Join-Path $env:LOCALAPPDATA 'OpenMinis'
+$sb = Join-Path $base 'sandbox'
+$dl = Join-Path $base 'downloads'
+New-Item -ItemType Directory -Force -Path $sb, $dl | Out-Null
+$tar = Join-Path $dl 'alpine-minirootfs-3.20.2-x86_64.tar.gz'
+
+if (-not (Test-Path $tar)) {
+    Write-Host "`n[1/4] 正在从清华大学镜像站下载 Alpine Linux 镜像 (约 3.8MB)..." -ForegroundColor Green
+    $url = "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $tar
+    } catch {
+        Write-Host "清华源下载失败，正在切换阿里云镜像源..." -ForegroundColor Yellow
+        Invoke-WebRequest -Uri "https://mirrors.aliyun.com/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz" -OutFile $tar
+    }
+}
+
+Write-Host "`n[2/4] 正在注销旧实例并向 WSL2 导入全新 OpenMinisSandbox..." -ForegroundColor Green
+wsl --unregister OpenMinisSandbox 2>$null
+wsl --import OpenMinisSandbox $sb $tar --version 2
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "WSL2 导入失败，降级尝试默认导入..." -ForegroundColor Yellow
+    wsl --import OpenMinisSandbox $sb $tar
+}
+
+Write-Host "`n[3/4] 正在写入零泄露宿主安全隔离规则 (/etc/wsl.conf)..." -ForegroundColor Green
+$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("[automount]`nenabled = false`nmountFsTab = false`n`n[interop]`nenabled = false`nappendWindowsPath = false`n`n[network]`ngenerateResolvConf = true`n"))
+wsl -d OpenMinisSandbox -u root --exec /bin/sh -c "echo '$b64' | base64 -d > /etc/wsl.conf"
+
+Write-Host "`n[4/4] 正在配置工作区与 Python 核心工具箱 (约 15 秒)..." -ForegroundColor Green
+wsl -d OpenMinisSandbox -u root --exec /bin/sh -c "mkdir -p /var/minis/workspace /var/minis/attachments /var/minis/shared /var/minis/offloads /var/minis/memory; chmod 000 /mnt 2>/dev/null; printf 'nameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 8.8.8.8\n' > /etc/resolv.conf; sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories; apk update && apk add --no-cache curl ca-certificates busybox python3 py3-pip bash jq openssh-client; pip install --break-system-packages beautifulsoup4 requests 2>/dev/null"
+wsl --terminate OpenMinisSandbox 2>$null
+
+Write-Host "`n=====================================================" -ForegroundColor Green
+Write-Host "   [✓] OpenMinis WSL2 沙箱安装全部完成！             " -ForegroundColor Green
+Write-Host "   请返回 OpenMinis 软件点击【刷新状态】即可开始使用 " -ForegroundColor Green
+Write-Host "=====================================================" -ForegroundColor Green
+Write-Host "`n按回车键退出此窗口..."
+Read-Host
+"#;
+        let temp_script = std::env::temp_dir().join("install_openminis_sandbox.ps1");
+        let _ = std::fs::write(&temp_script, ps_code);
+        std::process::Command::new("powershell.exe")
+            .args(["-ExecutionPolicy", "Bypass", "-NoProfile", "-File", &temp_script.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("无法唤起 PowerShell 终端: {}", e))?;
+        return Ok(());
+    }
+    Err("仅支持 Windows 环境".to_string())
 }
 
 // === 自动从供应商拉取可用模型列表 ===
@@ -466,6 +544,8 @@ fn main() {
             reset_sandbox,
             open_sandbox_rootfs_dir,
             restart_app,
+            open_external_url,
+            launch_installer_terminal,
             fetch_provider_models,
             // 模型组与用量 (对标原版)
             get_usage_dashboard,

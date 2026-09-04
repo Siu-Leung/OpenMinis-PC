@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.7 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.7_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.7_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.7.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.8 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.8_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.8_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.8.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,20 +74,19 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.7
+      - name: Update GitHub Release v1.13.0.8
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.7 (Windows 测试版)
-          tag_name: v1.13.0.7
+          name: OpenMinis Windows v1.13.0.8 (Windows 测试版)
+          tag_name: v1.13.0.8
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.7 (Windows 测试版 - 1:1 原版设置与 Rootfs 沙箱管理中心)
+            ### 📦 OpenMinis for Windows v1.13.0.8 (修复外部链接跳转 + 可视化沙箱终端安装 + 浏览器全网支持)
             > **⚠️ 备注：Windows 测试版 (Experimental)**
             
-            - **1:1 原版关于页面 (对标截图 1000143646)**：设置底部新增「关于 Minis」，带居中 Logo、标语、GitHub 仓库链接、在线检查更新卡片
-            - **全功能 Rootfs 沙箱管理中心 (对标截图 1000143307 菜单第二项)**：右上角菜单点击「Rootfs 沙箱管理」直达沙箱中心，支持健康诊断、一键无损修复 (DNS/权限/源/隔离)、重启释放内存与完全重置
-            - **纯净开箱体验**：彻底移除所有硬编码预设假数据，AI 服务商、模型组、Token 统计、模型池全部归零清空
-            - **用量详情展开 (对标截图 1000143557/1000143558)**：手风琴平滑展开 8 大深度指标（输入/输出/缓存读取/缓存命中率/日均/会话均值/会话数/活跃天数）
-            - **独立内置浏览器 (脱离 WSL)**：右上角菜单「打开浏览器」直接唤出全功能内置浏览器，支持自由导航与刷新
+            - **修复外部链接跳转**：彻底修复「反馈问题」与「GitHub 仓库」点击不跳转的问题，使用系统外壳直接在 Edge/Chrome 中打开
+            - **解决浏览器拒绝连接 (X-Frame-Options)**：提供一键在系统默认浏览器中打开按钮与顶栏地址栏跳转，支持访问 Bing、百度、GitHub 等所有带安全防护的网站
+            - **修复终端点击无反应**：Shell 终端唤起前置错误捕获，未安装沙箱时弹出友好引导，不再静默无声
+            - **解决沙箱安装重置无反应**：Rootfs 沙箱管理页面未安装状态下新增醒目的【⚡ 唤起终端窗口可视化安装】按钮，直接弹出一个独立的控制台窗口，实时滚动清华源下载与解压进度
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
