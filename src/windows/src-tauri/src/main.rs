@@ -217,7 +217,6 @@ async fn open_sandbox_rootfs_dir(state: State<'_, AppState>) -> Result<(), Strin
 }
 
 #[tauri::command]
-#[tauri::command]
 fn restart_app(app: AppHandle) {
     app.restart();
 }
