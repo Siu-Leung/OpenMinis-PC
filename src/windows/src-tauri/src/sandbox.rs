@@ -433,13 +433,46 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
         Ok(())
     }
 
+fn get_minis_home() -> std::path::PathBuf {
+    if let Ok(prof) = std::env::var("USERPROFILE") {
+        std::path::PathBuf::from(prof).join(".openminis")
+    } else if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home).join(".openminis")
+    } else {
+        std::path::PathBuf::from(r"C:\Users\Administrator\.openminis")
+    }
+}
+
     /// 在 Windows 文件资源管理器中打开沙箱目录
     pub fn open_in_explorer(&self, subpath: &str) -> Result<(), String> {
-        let clean_path = subpath.trim_start_matches("/var/minis/").replace('/', "\\");
-        let target_unc = format!(r"\\wsl$\{}\var\minis\{}", self.distro_name, clean_path);
+        let clean = subpath.trim_start_matches("/var/minis/").trim_start_matches('/');
+        let base_dir = get_minis_home();
+
+        let target_dir = if clean.is_empty() || clean == "shared" {
+            base_dir.join("shared")
+        } else if clean == "workspace" {
+            base_dir.join("workspace")
+        } else if clean == "attachments" {
+            base_dir.join("attachments")
+        } else {
+            base_dir.join(clean)
+        };
+        let _ = std::fs::create_dir_all(&target_dir);
+
+        let unc_primary = format!(r"\\wsl$\{}\var\minis\{}", self.distro_name, clean.replace('/', "\\"));
+        let unc_secondary = format!(r"\\wsl.localhost\{}\var\minis\{}", self.distro_name, clean.replace('/', "\\"));
+
+        let final_path = if std::path::Path::new(&unc_primary).exists() {
+            unc_primary
+        } else if std::path::Path::new(&unc_secondary).exists() {
+            unc_secondary
+        } else {
+            // 宿主机物理映射目录，杜绝 fallback 到 Windows 个人文档目录！
+            target_dir.to_string_lossy().to_string()
+        };
 
         let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.arg(target_unc);
+        cmd.arg(&final_path);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -538,15 +571,54 @@ sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/reposi
         self.auto_initialize(app).await
     }
 
-    /// 在 Windows 资源管理器打开沙箱根文件系统 (\\wsl$\OpenMinisSandbox\)
+    /// 在 Windows 资源管理器打开沙箱根文件系统
     pub fn open_rootfs_explorer(&self) -> Result<(), String> {
-        let target_unc = format!(r"\\wsl$\{}", self.distro_name);
+        let base_dir = get_minis_home();
+        let _ = std::fs::create_dir_all(&base_dir);
+
+        let unc_primary = format!(r"\\wsl$\{}", self.distro_name);
+        let unc_secondary = format!(r"\\wsl.localhost\{}", self.distro_name);
+
+        let final_path = if std::path::Path::new(&unc_primary).exists() {
+            unc_primary
+        } else if std::path::Path::new(&unc_secondary).exists() {
+            unc_secondary
+        } else {
+            base_dir.to_string_lossy().to_string()
+        };
+
         let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.arg(target_unc);
+        cmd.arg(&final_path);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.spawn().map_err(|e| format!("无法打开资源管理器: {}", e))?;
         Ok(())
+    }
+
+    /// 重启沙箱并返回最新诊断信息
+    pub async fn restart_sandbox(&self) -> Result<SandboxDiagnostics, String> {
+        self.terminate_sandbox().await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+
+        // 自动初始化与目录挂载
+        let base = get_minis_home();
+        let shared = base.join("shared");
+        let ws = base.join("workspace");
+        let att = base.join("attachments");
+        let _ = std::fs::create_dir_all(&shared);
+        let _ = std::fs::create_dir_all(&ws);
+        let _ = std::fs::create_dir_all(&att);
+
+        let shared_str = shared.to_string_lossy();
+        let ws_str = ws.to_string_lossy();
+        let mount_script = format!(
+            "mkdir -p /var/minis/shared /var/minis/workspace /var/minis/attachments /var/minis/mounts && \
+             mount -t drvfs '{}' /var/minis/shared 2>/dev/null || true; \
+             mount -t drvfs '{}' /var/minis/workspace 2>/dev/null || true",
+            shared_str, ws_str
+        );
+        let _ = self.execute_shell(&mount_script, 10).await;
+        Ok(self.get_diagnostics().await)
     }
 
     /// 关闭沙箱实例释放内存

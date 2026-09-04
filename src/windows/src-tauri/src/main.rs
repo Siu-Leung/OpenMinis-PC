@@ -521,6 +521,16 @@ fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> 
     state.sessions.delete_session(&id)
 }
 
+#[tauri::command]
+fn rename_session(state: State<'_, AppState>, id: String, title: String) -> Result<(), String> {
+    state.sessions.rename_session(&id, &title)
+}
+
+#[tauri::command]
+async fn restart_sandbox(state: State<'_, AppState>) -> Result<sandbox::SandboxDiagnostics, String> {
+    state.sandbox.restart_sandbox().await
+}
+
 // === 定时任务调度器 ===
 
 #[tauri::command]
@@ -691,6 +701,8 @@ fn main() {
             get_session_messages,
             search_sessions,
             delete_session,
+            rename_session,
+            restart_sandbox,
             // 定时任务
             list_tasks,
             add_task,

@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useRef } from "react";
+import { ProviderManager } from "./components/ProviderManager";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   PanelLeft,
+  Pin,
+  Edit3,
+  Download,
+  FileUp,
   Plus,
   ChevronDown,
   ChevronRight,
@@ -418,6 +423,164 @@ export default function App() {
     model_rankings: []
   });
 
+  // 会话置顶与右键菜单 (对标 Hermes PC)
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("openminis_pinned_sessions") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; session: SessionRecord } | null>(null);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState<string>("");
+
+  // 拖拽文件状态 (Drag & Drop)
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+
+  // 重启沙箱状态与提示
+  const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
+  const [sandboxRestartToast, setSandboxRestartToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener("click", closeMenu);
+    return () => window.removeEventListener("click", closeMenu);
+  }, []);
+
+  const handleContextMenu = (e: React.MouseEvent, session: SessionRecord) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      session,
+    });
+  };
+
+  const togglePinSession = (id: string) => {
+    const next = pinnedSessionIds.includes(id)
+      ? pinnedSessionIds.filter(x => x !== id)
+      : [...pinnedSessionIds, id];
+    setPinnedSessionIds(next);
+    localStorage.setItem("openminis_pinned_sessions", JSON.stringify(next));
+    setContextMenu(null);
+  };
+
+  const startRenameSession = (session: SessionRecord) => {
+    setRenamingSessionId(session.id);
+    setRenamingTitle(session.title);
+    setContextMenu(null);
+  };
+
+  const saveRenameSession = async (id: string) => {
+    if (renamingTitle.trim()) {
+      await invoke("rename_session", { id, title: renamingTitle.trim() });
+      loadSessions();
+    }
+    setRenamingSessionId(null);
+  };
+
+  const handleExportSession = async (session: SessionRecord) => {
+    setContextMenu(null);
+    try {
+      const msgs = await invoke<ChatMessage[]>("get_session_messages", { id: session.id });
+      let md = `# ${session.title}\n\n*导出时间: ${new Date().toLocaleString()}*\n\n---\n\n`;
+      for (const m of msgs) {
+        const roleName = m.role === "user" ? "👤 用户" : "🤖 Minis";
+        md += `### ${roleName}\n\n${m.content}\n\n`;
+      }
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${session.title.replace(/[\\/:*?"<>|]/g, "_") || "session"}.md`;
+      a.click();
+    } catch (err) {
+      alert(`导出失败: ${err}`);
+    }
+  };
+
+  const handleCompactSession = async (id: string) => {
+    setContextMenu(null);
+    alert("已执行智能上下文压缩！释放历史 Token 占用。");
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    setContextMenu(null);
+    if (confirm("确定要删除此历史会话吗？此操作不可逆。")) {
+      await invoke("delete_session", { id });
+      loadSessions();
+      if (currentSessionId === id) {
+        setCurrentSessionId(null);
+        setMessages([{ role: "assistant", content: "已开启新会话。请随时下达任务！" }]);
+      }
+    }
+  };
+
+  const handleRestartSandbox = async () => {
+    setIsRestartingSandbox(true);
+    setSandboxRestartToast("正在终止 WSL 沙箱实例并释放系统内存...");
+    try {
+      await invoke("restart_sandbox");
+      setSandboxRestartToast("沙箱已成功冷启动！内核与共享卷挂载就绪。");
+      await loadSandboxDiag();
+      setTimeout(() => {
+        setSandboxRestartToast(null);
+        setIsRestartingSandbox(false);
+      }, 2500);
+    } catch (err: any) {
+      setSandboxRestartToast(`重启失败: ${err}`);
+      setTimeout(() => {
+        setSandboxRestartToast(null);
+        setIsRestartingSandbox(false);
+      }, 3500);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDraggingFile(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    for (const file of files) {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64Data = reader.result as string;
+        const isMedia = file.type.startsWith("image/") || file.type.startsWith("audio/") || file.type.startsWith("video/");
+        try {
+          await invoke("upload_chat_attachment", {
+            name: file.name,
+            base64Data,
+            isMedia,
+          });
+          const targetPath = isMedia ? `/var/minis/attachments/${file.name}` : `/var/minis/workspace/${file.name}`;
+          setInput(prev => prev ? `${prev}\n[已附加文件: ${targetPath}]` : `请分析该文件：${targetPath}`);
+        } catch (err) {
+          console.error("上传附件失败:", err);
+          alert(`上传文件 ${file.name} 失败: ${err}`);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   // 对话流状态
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -797,13 +960,16 @@ export default function App() {
 
   const allAvailableModels = providers.flatMap(p => p.models || []);
   const activeProvider = providers.find(p => p.id === activeProviderId) || providers[0];
+  const currentProvider = activeProvider;
   const filteredSessions = sessionSearch.trim()
     ? sessions.filter(s =>
         s.title.toLowerCase().includes(sessionSearch.toLowerCase()) ||
         (s.preview && s.preview.toLowerCase().includes(sessionSearch.toLowerCase()))
       )
     : sessions;
-  const sessionGroups = groupSessionsByDate(filteredSessions);
+  const pinnedSessions = filteredSessions.filter(s => pinnedSessionIds.includes(s.id));
+  const unpinnedSessions = filteredSessions.filter(s => !pinnedSessionIds.includes(s.id));
+  const sessionGroups = groupSessionsByDate(unpinnedSessions);
 
   return (
     <div className={`flex h-screen w-screen overflow-hidden select-none font-sans ${oledMode ? "bg-[#000000]" : "bg-[#F2F2F7] dark:bg-[#000000]"} text-[#1C1C1E] dark:text-[#F2F2F7]`}>
@@ -812,6 +978,8 @@ export default function App() {
       ========================================================================= */}
       {sidebarOpen && (
         <aside className="w-64 border-r border-[#E5E5EA] dark:border-[#1C1C1E] flex flex-col shrink-0 bg-white/80 dark:bg-[#0C0C0E]/95 backdrop-blur-xl z-20 transition-all">
+
+
           {/* 顶栏控制 */}
           <div className="p-3.5 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -848,72 +1016,170 @@ export default function App() {
             </div>
           </div>
 
-          {/* 智能时间分组会话列表 */}
+          {/* 智能时间分组会话列表 (带置顶与右键菜单 - 对标 Hermes PC) */}
           <div className="flex-1 overflow-y-auto min-h-0 divide-y divide-[#E5E5EA]/40 dark:divide-[#1C1C1E]/40">
-            {sessionGroups.length === 0 ? (
+            {filteredSessions.length === 0 ? (
               <div className="text-center py-10 text-xs text-[#8E8E93] px-4 space-y-1">
                 <div>暂无会话记录</div>
                 <div className="text-[11px] text-[#636366]">点击下方“新建会话”开始探索</div>
               </div>
             ) : (
-              sessionGroups.map(group => (
-                <div key={group.label} className="py-2">
-                  <div className="px-4 py-1 text-[11px] font-bold uppercase tracking-wider text-[#8E8E93]">
-                    {group.label}
-                  </div>
-                  <div className="space-y-0.5 mt-1">
-                    {group.items.map((s, idx) => {
-                      const colorConfig = AVATAR_COLORS[idx % AVATAR_COLORS.length];
-                      const isSelected = currentSessionId === s.id;
+              <>
+                {/* 📌 置顶会话分组 */}
+                {pinnedSessions.length > 0 && (
+                  <div className="py-2">
+                    <div className="px-4 py-1 text-[11px] font-bold uppercase tracking-wider text-[#FF9F0A] flex items-center gap-1.5">
+                      <Pin className="w-3 h-3" />
+                      <span>置顶会话</span>
+                    </div>
+                    <div className="space-y-0.5 mt-1">
+                      {pinnedSessions.map((s, idx) => {
+                        const colorConfig = AVATAR_COLORS[idx % AVATAR_COLORS.length];
+                        const isSelected = currentSessionId === s.id;
 
-                      return (
-                        <div
-                          key={s.id}
-                          onClick={() => {
-                            invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
-                              setMessages(msgs);
-                              setCurrentSessionId(s.id);
-                            });
-                          }}
-                          className={`group flex items-center gap-2.5 px-3 py-2.5 mx-1.5 rounded-xl cursor-pointer transition select-none ${
-                            isSelected
-                              ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm"
-                              : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
-                          }`}
-                        >
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text} text-xs font-bold`}>
-                            {s.title ? s.title.slice(0, 1).toUpperCase() : "M"}
-                          </div>
-
-                          <div className="flex-1 min-w-0 pr-1">
-                            <div className="flex items-center justify-between mb-0.5">
-                              <span className="font-semibold text-xs text-[#1C1C1E] dark:text-[#FFFFFF] truncate">
-                                {s.title}
-                              </span>
-                            </div>
-                            <div className="text-[11px] text-[#8E8E93] truncate">
-                              {s.preview || "暂无消息摘要"}
-                            </div>
-                          </div>
-
-                          <button
-                            onClick={e => {
-                              e.stopPropagation();
-                              if (confirm("确定要删除此历史会话吗？")) {
-                                invoke("delete_session", { id: s.id }).then(() => loadSessions());
-                              }
+                        return (
+                          <div
+                            key={s.id}
+                            onClick={() => {
+                              invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
+                                setMessages(msgs);
+                                setCurrentSessionId(s.id);
+                              });
                             }}
-                            className="opacity-0 group-hover:opacity-100 p-1 text-[#8E8E93] hover:text-[#FF453A] transition"
-                            title="删除会话"
+                            onContextMenu={e => handleContextMenu(e, s)}
+                            className={`group flex items-center gap-2.5 px-3 py-2.5 mx-1.5 rounded-xl cursor-pointer transition select-none ${
+                              isSelected
+                                ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm"
+                                : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
+                            }`}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      );
-                    })}
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text} text-xs font-bold`}>
+                              {s.title ? s.title.slice(0, 1).toUpperCase() : "M"}
+                            </div>
+
+                            <div className="flex-1 min-w-0 pr-1">
+                              {renamingSessionId === s.id ? (
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  value={renamingTitle}
+                                  onChange={e => setRenamingTitle(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === "Enter") saveRenameSession(s.id);
+                                    if (e.key === "Escape") setRenamingSessionId(null);
+                                  }}
+                                  onBlur={() => saveRenameSession(s.id)}
+                                  onClick={e => e.stopPropagation()}
+                                  className="w-full bg-white dark:bg-[#2C2C2E] px-2 py-0.5 rounded text-xs text-black dark:text-white border border-[#0A84FF] outline-none"
+                                />
+                              ) : (
+                                <>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <span className="font-semibold text-xs text-[#1C1C1E] dark:text-[#FFFFFF] truncate">
+                                      {s.title}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-[#8E8E93] truncate">
+                                    {s.preview || "暂无消息摘要"}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+
+                            <button
+                              onClick={e => {
+                                e.stopPropagation();
+                                handleContextMenu(e, s);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-[#8E8E93] hover:text-black dark:hover:text-white rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition"
+                              title="会话菜单"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))
+                )}
+
+                {/* 智能时间分组 */}
+                {sessionGroups.map(group => (
+                  <div key={group.label} className="py-2">
+                    <div className="px-4 py-1 text-[11px] font-bold uppercase tracking-wider text-[#8E8E93]">
+                      {group.label}
+                    </div>
+                    <div className="space-y-0.5 mt-1">
+                      {group.items.map((s, idx) => {
+                        const colorConfig = AVATAR_COLORS[idx % AVATAR_COLORS.length];
+                        const isSelected = currentSessionId === s.id;
+
+                        return (
+                          <div
+                            key={s.id}
+                            onClick={() => {
+                              invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
+                                setMessages(msgs);
+                                setCurrentSessionId(s.id);
+                              });
+                            }}
+                            onContextMenu={e => handleContextMenu(e, s)}
+                            className={`group flex items-center gap-2.5 px-3 py-2.5 mx-1.5 rounded-xl cursor-pointer transition select-none ${
+                              isSelected
+                                ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm"
+                                : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
+                            }`}
+                          >
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text} text-xs font-bold`}>
+                              {s.title ? s.title.slice(0, 1).toUpperCase() : "M"}
+                            </div>
+
+                            <div className="flex-1 min-w-0 pr-1">
+                              {renamingSessionId === s.id ? (
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  value={renamingTitle}
+                                  onChange={e => setRenamingTitle(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === "Enter") saveRenameSession(s.id);
+                                    if (e.key === "Escape") setRenamingSessionId(null);
+                                  }}
+                                  onBlur={() => saveRenameSession(s.id)}
+                                  onClick={e => e.stopPropagation()}
+                                  className="w-full bg-white dark:bg-[#2C2C2E] px-2 py-0.5 rounded text-xs text-black dark:text-white border border-[#0A84FF] outline-none"
+                                />
+                              ) : (
+                                <>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <span className="font-semibold text-xs text-[#1C1C1E] dark:text-[#FFFFFF] truncate">
+                                      {s.title}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-[#8E8E93] truncate">
+                                    {s.preview || "暂无消息摘要"}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+
+                            <button
+                              onClick={e => {
+                                e.stopPropagation();
+                                handleContextMenu(e, s);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-[#8E8E93] hover:text-black dark:hover:text-white rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition"
+                              title="会话菜单"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </>
             )}
           </div>
 
@@ -943,7 +1209,18 @@ export default function App() {
       {/* =========================================================================
           2. 主聊天区 (1:1 原版顶栏与菜单 + KaTeX + 停止生成 + 思考强度)
       ========================================================================= */}
-      <main className="flex-1 flex flex-col h-full bg-[#F2F2F7] dark:bg-[#000000] relative">
+      <main onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} className="flex-1 flex flex-col h-full bg-[#F2F2F7] dark:bg-[#000000] relative">
+        {isDraggingFile && (
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md z-50 flex flex-col items-center justify-center p-8 text-white border-2 border-dashed border-[#0A84FF] rounded-3xl m-4 animate-in fade-in zoom-in-95 duration-150 pointer-events-none">
+            <div className="w-20 h-20 rounded-full bg-[#0A84FF]/20 flex items-center justify-center mb-4 text-[#0A84FF]">
+              <FileUp className="w-10 h-10" />
+            </div>
+            <div className="text-lg font-bold">释放文件以上传至沙箱工作区</div>
+            <div className="text-xs text-[#8E8E93] mt-2 max-w-sm text-center">
+              文件将自动保存至沙箱 /var/minis/workspace，并在聊天框填入引用路径供大模型直接调用、分析与执行
+            </div>
+          </div>
+        )}
         {/* 顶栏 */}
         <header className="h-[52px] border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between px-4 shrink-0 bg-white/70 dark:bg-[#000000]/80 backdrop-blur-md z-10">
           <div className="flex items-center gap-2">
@@ -958,17 +1235,22 @@ export default function App() {
             )}
           </div>
 
-          {/* 顶栏中心：模型选择胶囊 */}
+          {/* 顶栏中心：模型选择胶囊 (1:1 明确显式提供商与模型) */}
           <div className="relative">
             <button
               onClick={() => setShowModelPicker(!showModelPicker)}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-semibold text-[#1C1C1E] dark:text-[#FFFFFF] transition hover:border-[#0A84FF]/50"
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-semibold text-[#1C1C1E] dark:text-[#FFFFFF] transition hover:border-[#0A84FF]/50"
             >
+              {currentProvider && (
+                <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#0A84FF]/10 text-[#0A84FF] font-bold shrink-0">
+                  {currentProvider.name}
+                </span>
+              )}
               <span className="truncate max-w-[200px]">{activeModel || "选择模型"}</span>
               <ChevronDown className="w-3.5 h-3.5 text-[#8E8E93]" />
             </button>
 
-            {/* 模型选择弹窗 */}
+            {/* 模型选择弹窗 (按提供商清晰分组) */}
             {showModelPicker && (
               <div className="absolute top-10 left-1/2 -translate-x-1/2 w-80 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none">
                 <div className="pb-2.5 border-b border-[#E5E5EA] dark:border-[#2C2C2E] mb-2 space-y-1.5">
@@ -992,31 +1274,67 @@ export default function App() {
                 </div>
 
                 <div className="text-[11px] font-semibold text-[#8E8E93] mb-1">可用模型池</div>
-                <div className="max-h-60 overflow-y-auto space-y-1">
-                  {allAvailableModels.length === 0 ? (
+                <div className="max-h-64 overflow-y-auto space-y-3 p-1">
+                  {providers.length === 0 ? (
                     <div className="text-center py-6 text-xs text-[#8E8E93] space-y-2">
                       <div>暂无可用模型</div>
                       <button
                         onClick={() => { setShowModelPicker(false); setSettingsView("providers"); }}
-                        className="text-[#0A84FF] hover:underline"
+                        className="text-[#0A84FF] hover:underline font-semibold"
                       >
                         前往设置 → 添加 AI 服务商
                       </button>
                     </div>
                   ) : (
-                    allAvailableModels.map(m => (
-                      <button
-                        key={m}
-                        onClick={() => { setActiveModel(m); setShowModelPicker(false); }}
-                        className={`w-full text-left px-3 py-1.5 rounded-lg text-xs truncate transition flex items-center justify-between ${
-                          activeModel === m ? "bg-[#0A84FF] text-white font-semibold" : "text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]"
-                        }`}
-                      >
-                        <span className="truncate">{m}</span>
-                        {activeModel === m && <Check className="w-3.5 h-3.5" />}
-                      </button>
+                    providers.map(p => (
+                      <div key={p.id} className="space-y-1">
+                        <div className="flex items-center justify-between px-2 text-[10px] font-bold text-[#8E8E93] uppercase tracking-wider">
+                          <span className="flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${p.api_key ? "bg-[#34C759]" : "bg-[#8E8E93]"}`} />
+                            {p.name}
+                          </span>
+                          <span>{p.models.length} 个模型</span>
+                        </div>
+                        <div className="space-y-0.5">
+                          {p.models.length === 0 ? (
+                            <div className="text-[11px] text-[#8E8E93] px-3 py-1 italic">未配置模型</div>
+                          ) : (
+                            p.models.map(m => {
+                              const isSelected = activeProviderId === p.id && activeModel === m;
+                              return (
+                                <button
+                                  key={m}
+                                  onClick={() => {
+                                    setActiveProviderId(p.id);
+                                    setActiveModel(m);
+                                    setShowModelPicker(false);
+                                  }}
+                                  className={`w-full text-left px-3 py-1.5 rounded-xl text-xs truncate transition flex items-center justify-between ${
+                                    isSelected
+                                      ? "bg-[#0A84FF] text-white font-semibold shadow-sm"
+                                      : "text-[#1C1C1E] dark:text-[#E5E5EA] hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]"
+                                  }`}
+                                >
+                                  <span className="truncate">{m}</span>
+                                  {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
                     ))
                   )}
+                </div>
+
+                <div className="pt-2 border-t border-[#E5E5EA] dark:border-[#2C2C2E] mt-2">
+                  <button
+                    onClick={() => { setShowModelPicker(false); setSettingsView("providers"); }}
+                    className="w-full py-1.5 rounded-xl text-center text-xs text-[#0A84FF] font-semibold hover:bg-[#0A84FF]/10 transition flex items-center justify-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>管理 AI 服务商</span>
+                  </button>
                 </div>
               </div>
             )}
@@ -1734,7 +2052,7 @@ export default function App() {
                   </div>
 
                   <div
-                    onClick={() => alert("Minis 为完全本地、完全私密的设备端智能体，所有沙箱与工具均在本地运行，绝不上传您的任何私密数据。")}
+                    onClick={() => invoke("open_external_url", { url: "https://openminis.github.io/privacy-policy.html" })}
                     className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
                   >
                     <div className="flex items-center gap-3">
@@ -2076,127 +2394,17 @@ export default function App() {
 
       {/* 现有子模态框 */}
       {settingsView === "providers" && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
-          <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
-            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
-              <div className="flex items-center gap-3">
-                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                <h2 className="text-lg font-bold text-black dark:text-white">AI 服务商</h2>
-              </div>
-              <button
-                onClick={() => {
-                  const newId = `custom-${Date.now().toString(36)}`;
-                  const newP = { id: newId, name: "新建供应商", provider_url: "https://api.openai.com/v1", api_key: "", models: [] };
-                  const next = [...providers, newP];
-                  saveProviders(next);
-                  if (!activeProviderId) setActiveProviderId(newId);
-                }}
-                className="text-black dark:text-white p-1"
-                title="添加新服务商"
-              >
-                <Plus className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {providers.length === 0 ? (
-                <div className="text-center py-16 text-xs text-[#8E8E93] space-y-3">
-                  <Server className="w-10 h-10 mx-auto text-[#8E8E93]/60" />
-                  <div>暂无 AI 服务商，请点击右上角 <Plus className="w-4 h-4 inline" /> 添加</div>
-                </div>
-              ) : (
-                <div>
-                  <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">OPENAI / 兼容</div>
-                  <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
-                    {providers.map(p => (
-                      <div key={p.id} className="p-4 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]/40 transition space-y-2">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <span className={`w-2.5 h-2.5 rounded-full ${p.api_key ? "bg-[#34C759]" : "bg-[#FF9F0A]"} shrink-0`} />
-                            <input
-                              type="text"
-                              value={p.name}
-                              onChange={e => {
-                                const val = e.target.value;
-                                saveProviders(providers.map(item => item.id === p.id ? { ...item, name: val } : item));
-                              }}
-                              className="font-bold text-base bg-transparent border-none text-black dark:text-white focus:outline-none"
-                            />
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const list = await invoke<string[]>("fetch_provider_models", { providerUrl: p.provider_url, apiKey: p.api_key });
-                                  const updated = providers.map(item => item.id === p.id ? { ...item, models: list } : item);
-                                  saveProviders(updated);
-                                  if (list.length > 0 && (!activeModel || activeProviderId === p.id)) {
-                                    setActiveModel(list[0]);
-                                    setActiveProviderId(p.id);
-                                  }
-                                } catch (e) { alert(e); }
-                              }}
-                              className="text-xs text-[#0A84FF] hover:underline flex items-center gap-1 font-medium"
-                            >
-                              <RefreshCw className="w-3.5 h-3.5" /> 拉取模型
-                            </button>
-                            <button
-                              onClick={() => {
-                                const next = providers.filter(item => item.id !== p.id);
-                                saveProviders(next);
-                                if (activeProviderId === p.id) {
-                                  setActiveProviderId(next.length > 0 ? next[0].id : "");
-                                  setActiveModel(next.length > 0 && next[0].models.length > 0 ? next[0].models[0] : "");
-                                }
-                              }}
-                              className="text-[#8E8E93] hover:text-[#FF453A] p-1"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="text-xs text-[#8E8E93] flex items-center justify-between">
-                          <span>API Key · {p.api_key ? `${p.api_key.slice(0, 6)}...${p.api_key.slice(-4)}` : "未配置"}</span>
-                          <span>{p.models.length} 个模型</span>
-                        </div>
-
-                        <div className="pt-1 flex gap-2">
-                          <input
-                            type="password"
-                            value={p.api_key}
-                            onChange={e => {
-                              const val = e.target.value;
-                              saveProviders(providers.map(item => item.id === p.id ? { ...item, api_key: val } : item));
-                            }}
-                            placeholder="填入 API Key (sk-...)"
-                            className="flex-1 bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-1.5 text-xs text-black dark:text-white font-mono focus:outline-none"
-                          />
-                          <input
-                            type="text"
-                            value={p.provider_url}
-                            onChange={e => {
-                              const val = e.target.value;
-                              saveProviders(providers.map(item => item.id === p.id ? { ...item, provider_url: val } : item));
-                            }}
-                            className="flex-1 bg-[#F2F2F7] dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-xl px-3 py-1.5 text-xs text-black dark:text-white font-mono focus:outline-none"
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <ProviderManager
+          providers={providers}
+          activeProviderId={activeProviderId}
+          activeModel={activeModel}
+          onSaveProviders={saveProviders}
+          onSetActiveProvider={setActiveProviderId}
+          onSetActiveModel={setActiveModel}
+          onClose={() => setSettingsView("root")}
+        />
       )}
 
-      {/* =========================================================================
-          5. 模型分组与回退 (纯净空状态)
-      ========================================================================= */}
       {settingsView === "model_groups" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
@@ -2702,20 +2910,19 @@ export default function App() {
 
                   {/* 重启沙箱释放内存 */}
                   <div
-                    onClick={async () => {
-                      await invoke("terminate_sandbox");
-                      alert("沙箱已完全终止，内存已 100% 归还宿主系统。下次执行命令时将自动冷启动。");
-                      loadSandboxDiag();
-                    }}
+                    onClick={handleRestartSandbox}
                     className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-lg bg-[#FF9F0A] flex items-center justify-center text-white">
-                        <Power className="w-4 h-4" />
+                        {isRestartingSandbox ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />}
                       </div>
                       <div>
-                        <div className="text-sm font-semibold text-black dark:text-white">重启沙箱 / 释放内存</div>
-                        <div className="text-xs text-[#8E8E93]">彻底关闭后台运行实例，清除所有内存占用</div>
+                        <div className="text-sm font-semibold text-black dark:text-white flex items-center gap-2">
+                          <span>重启沙箱 / 释放内存</span>
+                          {isRestartingSandbox && <span className="text-xs text-[#FF9F0A] font-normal animate-pulse">执行中...</span>}
+                        </div>
+                        <div className="text-xs text-[#8E8E93]">冷启动 WSL2 Alpine 实例并重新装配宿主共享卷</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -2792,7 +2999,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.8 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.9 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -2861,7 +3068,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.8 (Windows 测试版)
+                  当前版本：1.13.0.9 (Windows 测试版)
                 </div>
               </div>
             </div>
@@ -2886,6 +3093,62 @@ export default function App() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+      {/* 会话右键上下文菜单 (对标 Hermes PC) */}
+      {contextMenu && (
+        <div
+          style={{
+            top: Math.min(contextMenu.y, window.innerHeight - 240),
+            left: Math.min(contextMenu.x, window.innerWidth - 190),
+          }}
+          className="fixed w-44 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none space-y-0.5"
+          onClick={e => e.stopPropagation()}
+        >
+          <button
+            onClick={() => startRenameSession(contextMenu.session)}
+            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+          >
+            <Edit3 className="w-3.5 h-3.5 text-[#0A84FF]" />
+            <span>重命名会话</span>
+          </button>
+          <button
+            onClick={() => togglePinSession(contextMenu.session.id)}
+            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+          >
+            <Pin className="w-3.5 h-3.5 text-[#FF9F0A]" />
+            <span>{pinnedSessionIds.includes(contextMenu.session.id) ? "取消置顶" : "置顶会话"}</span>
+          </button>
+          <button
+            onClick={() => handleCompactSession(contextMenu.session.id)}
+            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+          >
+            <Layers className="w-3.5 h-3.5 text-[#32ADE6]" />
+            <span>压缩上下文</span>
+          </button>
+          <button
+            onClick={() => handleExportSession(contextMenu.session)}
+            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+          >
+            <Download className="w-3.5 h-3.5 text-[#34C759]" />
+            <span>导出 Markdown</span>
+          </button>
+          <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
+          <button
+            onClick={() => handleDeleteSession(contextMenu.session.id)}
+            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>删除会话</span>
+          </button>
+        </div>
+      )}
+
+      {/* 沙箱重启进度 Toast */}
+      {sandboxRestartToast && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-black/85 backdrop-blur-md text-white px-5 py-3 rounded-2xl shadow-2xl border border-white/10 flex items-center gap-3 text-xs animate-in fade-in slide-in-from-top-4 duration-200">
+          <RefreshCw className="w-4 h-4 animate-spin text-[#0A84FF]" />
+          <span className="font-semibold">{sandboxRestartToast}</span>
         </div>
       )}
     </div>

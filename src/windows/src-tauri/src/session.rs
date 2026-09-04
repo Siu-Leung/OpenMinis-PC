@@ -115,6 +115,17 @@ impl SessionStore {
         self.load_all_internal()
     }
 
+    /// 重命名指定会话
+    pub fn rename_session(&self, id: &str, new_title: &str) -> Result<(), String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut sessions = self.load_all_internal()?;
+        if let Some(s) = sessions.iter_mut().find(|s| s.id == id) {
+            s.title = new_title.to_string();
+        }
+        self.write_all_internal(&sessions)?;
+        Ok(())
+    }
+
     /// 删除指定会话
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
         let _guard = self.lock.lock().map_err(|e| e.to_string())?;

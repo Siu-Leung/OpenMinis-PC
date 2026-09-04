@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.8 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.8_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.8_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.8.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.9 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.9_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.9_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.9.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,19 +74,20 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.8
+      - name: Update GitHub Release v1.13.0.9
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.8 (Windows 测试版)
-          tag_name: v1.13.0.8
+          name: OpenMinis Windows v1.13.0.9 (Windows 测试版)
+          tag_name: v1.13.0.9
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.8 (修复外部链接跳转 + 可视化沙箱终端安装 + 浏览器全网支持)
+            ### 📦 OpenMinis for Windows v1.13.0.9 (1:1 深度复刻原版服务商中心 + 聊天框模型与提供商全显 + 数学公式/代码块沙箱执行)
             > **⚠️ 备注：Windows 测试版 (Experimental)**
             
-            - **修复外部链接跳转**：彻底修复「反馈问题」与「GitHub 仓库」点击不跳转的问题，使用系统外壳直接在 Edge/Chrome 中打开
-            - **解决浏览器拒绝连接 (X-Frame-Options)**：提供一键在系统默认浏览器中打开按钮与顶栏地址栏跳转，支持访问 Bing、百度、GitHub 等所有带安全防护的网站
-            - **修复终端点击无反应**：Shell 终端唤起前置错误捕获，未安装沙箱时弹出友好引导，不再静默无声
-            - **解决沙箱安装重置无反应**：Rootfs 沙箱管理页面未安装状态下新增醒目的【⚡ 唤起终端窗口可视化安装】按钮，直接弹出一个独立的控制台窗口，实时滚动清华源下载与解压进度
+            - **1:1 原版 AI 服务商中心**：深度对标原版截图，支持分级卡片、绿灯状态感知、Key 掩码脱敏、主流推荐预设（DeepSeek、OpenAI、SiliconFlow、Ollama、Moonshot）、自定义 /v1 自动追加、延迟 Ping 测试与模型在线刷新
+            - **聊天框提供商全显**：顶栏与消息流完整展示「提供商名称 / 模型」，下拉模型池智能按提供商分组归类
+            - **代码块沙箱一键运行**：点击代码块右上角【沙箱运行】即可在 WSL2 Alpine 真实执行并内联查看 Stdout/Stderr
+            - **全量 KaTeX 数学方程式渲染**：行内与块级 LaTeX 公式原生呈现
+            - **生成中止 (Stop Button)**：聊天输入栏支持实时停止生成流
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
