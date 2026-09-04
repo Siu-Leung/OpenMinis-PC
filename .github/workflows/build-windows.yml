@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.13 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.13_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.13_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.13.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.14 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.14_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.14_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.14.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,20 +74,22 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.13
+      - name: Update GitHub Release v1.13.0.14
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.13 (Windows 测试版)
-          tag_name: v1.13.0.13
+          name: OpenMinis Windows v1.13.0.14 (Windows 测试版)
+          tag_name: v1.13.0.14
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.13 (修复自动添加/v1 + 日志系统接入真实写入与开关)
+            ### 📦 OpenMinis for Windows v1.13.0.14 (多模态检测修复 + Agent 供应商管理 + 设计规范 + 浮动工具状态栏)
             > **⚠️ 备注：Windows 测试版 (Experimental)**
             
-            - **修复「自动添加 /v1」bug**：统一采用原版 effectiveBaseURL 语义（先去除尾斜杠再判断），修复尾斜杠导致的 `/v1//v1` 重复追加 404；后端移除硬编码域名白名单，改读 `auto_append_v1` 开关，自定义域名也能正确追加
-            - **日志系统接入真实写入**：Agent 模型调用、故障回退、错误、工具执行等关键节点现在真正写入日志文件，不再空转
-            - **日志开关真正生效**：新增 `set_logging_enabled` 持久化命令，「启用日志」开关实时控制写入，重启后状态保留
-            - **日志保留策略**：每日轮转 + 15 天自动清理过期日志（对标原版 pruneOldLogs）
-            - **删除日志语义修正**：删除所有日志后不再立即重建文件
+            - **修复多模态检测误判**：不再只看 HTTP 状态码，改用「发纯红图问颜色、验证回答是否命中红色」的真实验证（对标原版 looksBlind），修复所有模型都被误判为「支持图文」
+            - **Agent 供应商管理**：供应商迁移到后端统一存储；Agent 新增 `list_providers`（查询已添加供应商）与 `add_provider`（自己添加供应商）两个工具，可直接读写供应商
+            - **统一设计规范**：建立语义化 CSS 变量体系（对标原版 ChatColors.kt 配色），修复主题切换不生效（darkMode class + themeMode 同步）
+            - **聊天 UI 颜色对齐原版**：用户气泡、代码块、内联代码颜色精确对齐原版 token
+            - **浮动工具状态栏**：输入栏上方新增工具执行状态条（对标原版 FloatingToolBar），实时显示工具运行/成功/失败 + 多工具分页
+            - **反馈三渠道**：GitHub Issues + Telegram + Email（对标原版 FeedbackSheet）
+            - **自动添加 /v1 修复** + **日志系统接入真实写入与开关**
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

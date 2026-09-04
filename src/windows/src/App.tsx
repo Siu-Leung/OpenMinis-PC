@@ -64,7 +64,9 @@ import {
   Puzzle,
   HardDrive,
   Heart,
-  Volume2
+  Volume2,
+  Send,
+  Mail
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -2484,7 +2486,39 @@ export default function App() {
                       <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
                         <FileCode className="w-4 h-4" />
                       </div>
-                      <span className="text-sm font-semibold text-black dark:text-white">反馈问题</span>
+                      <span className="text-sm font-semibold text-black dark:text-white">反馈问题 (GitHub Issues)</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[#8E8E93]">
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <ChevronRight className="w-4 h-4" />
+                    </div>
+                  </div>
+
+                  <div
+                    onClick={() => invoke("open_external_url", { url: "https://t.me/+2NzhOJuzRyI1YmM1" })}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#34C759] flex items-center justify-center text-white">
+                        <Send className="w-4 h-4" />
+                      </div>
+                      <span className="text-sm font-semibold text-black dark:text-white">反馈 (Telegram)</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[#8E8E93]">
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <ChevronRight className="w-4 h-4" />
+                    </div>
+                  </div>
+
+                  <div
+                    onClick={() => invoke("open_external_url", { url: "mailto:dev@openminis.app?subject=Minis Feedback" })}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#FF9500] flex items-center justify-center text-white">
+                        <Mail className="w-4 h-4" />
+                      </div>
+                      <span className="text-sm font-semibold text-black dark:text-white">反馈 (Email)</span>
                     </div>
                     <div className="flex items-center gap-1 text-[#8E8E93]">
                       <ExternalLink className="w-3.5 h-3.5" />
@@ -3350,7 +3384,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.13 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.14 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3394,7 +3428,7 @@ export default function App() {
                       setUpdateUrl("");
                       try {
                         const curVerRaw = await invoke<string>("get_app_version").catch(() => "");
-                        const curVer = curVerRaw ? `v${curVerRaw}` : "v1.13.0.13";
+                        const curVer = curVerRaw ? `v${curVerRaw}` : "v1.13.0.14";
                         const res = await fetch("https://api.github.com/repos/Siu-Leung/OpenMinis-PC/releases/latest");
                         if (res.ok) {
                           const data = await res.json();
@@ -3449,7 +3483,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.13 (Windows 测试版)
+                  当前版本：1.13.0.14 (Windows 测试版)
                 </div>
               </div>
             </div>
