@@ -41,6 +41,34 @@ export function MinisComputer({
 }: MinisComputerProps) {
   const [minimized, setMinimized] = useState(false);
   const [timer, setTimer] = useState(0);
+  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
+
+  // 把 minis:// 协议路径转成 data URL (webview 不能直接加载自定义协议)
+  useEffect(() => {
+    if (!computerState.previewImageUrl) {
+      setPreviewDataUrl(null);
+      return;
+    }
+    if (
+      computerState.previewImageUrl.startsWith("data:") ||
+      computerState.previewImageUrl.startsWith("http://") ||
+      computerState.previewImageUrl.startsWith("https://")
+    ) {
+      setPreviewDataUrl(computerState.previewImageUrl);
+      return;
+    }
+    let isMounted = true;
+    invoke<string>("read_image_data_url", { pathOrUrl: computerState.previewImageUrl })
+      .then(url => {
+        if (isMounted) setPreviewDataUrl(url);
+      })
+      .catch(() => {
+        if (isMounted) setPreviewDataUrl(null);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [computerState.previewImageUrl]);
 
   useEffect(() => {
     let interval: any;
@@ -124,9 +152,9 @@ export function MinisComputer({
 
                 {/* 网页实时预览截图 */}
                 <div className="flex-1 relative flex items-center justify-center bg-[#141416] overflow-hidden">
-                  {computerState.previewImageUrl ? (
+                  {previewDataUrl ? (
                     <img
-                      src={computerState.previewImageUrl}
+                      src={previewDataUrl}
                       alt="Live Page"
                       className="w-full h-full object-cover object-top"
                     />

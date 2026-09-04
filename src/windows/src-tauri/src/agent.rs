@@ -631,17 +631,25 @@ impl AgentEngine {
 
                     let fn_args: Value = serde_json::from_str(fn_args_str).unwrap_or(json!({}));
 
+                    // 携带工具参数 JSON, 前端据此驱动 Minis Computer 画中画小电脑 (真实 URL/命令)
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_start".to_string(),
-                        content: format!("正在调用: {}", fn_name),
+                        content: json!({ "tool": fn_name, "args": fn_args }).to_string(),
                     });
                     append_log(&format!("[Tool] 调用 {} 参数: {}", fn_name, fn_args_str));
 
-                    let result = self.dispatcher.dispatch(fn_name, fn_args).await;
+                    let result = self.dispatcher.dispatch(fn_name, fn_args.clone()).await;
 
+                    // 提取结果片段给前端小电脑展示 (截断防超长)
+                    let result_str = result.to_string();
+                    let snippet = if result_str.len() > 800 {
+                        format!("{}...", &result_str[..800])
+                    } else {
+                        result_str.clone()
+                    };
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_end".to_string(),
-                        content: format!("{} 执行完毕", fn_name),
+                        content: json!({ "tool": fn_name, "output": snippet }).to_string(),
                     });
 
                     history.push(ChatMessage {

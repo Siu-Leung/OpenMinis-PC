@@ -243,6 +243,8 @@ export interface ChatTurn {
   images?: string[];
   thinking?: string;
   thinking_duration?: number;
+  /** 该 turn 在原始 messages 数组中的起始索引 (用于重试/打断精确定位) */
+  startMsgIdx: number;
   toolSteps: {
     name: string;
     label: string;
@@ -271,6 +273,7 @@ function aggregateMessagesIntoTurns(messages: ChatMessage[]): ChatTurn[] {
         role: "user",
         content: m.content,
         images: m.images,
+        startMsgIdx: i,
         toolSteps: [],
       });
     } else if (m.role === "tool") {
@@ -279,6 +282,7 @@ function aggregateMessagesIntoTurns(messages: ChatMessage[]): ChatTurn[] {
           id: `turn-asst-${i}`,
           role: "assistant",
           content: "",
+          startMsgIdx: i,
           toolSteps: [],
         };
       }
@@ -292,6 +296,7 @@ function aggregateMessagesIntoTurns(messages: ChatMessage[]): ChatTurn[] {
           content: m.content || "",
           thinking: m.thinking,
           thinking_duration: m.thinking_duration,
+          startMsgIdx: i,
           toolSteps: [],
         };
       } else {
@@ -598,13 +603,33 @@ export default function App() {
 
   const handleRetryFromUserTurn = async (turnIndex: number, turn: ChatTurn) => {
     setMessageContextMenu(null);
-    if (loading) return;
-    const turns = aggregateMessagesIntoTurns(messages);
-    let sliceMsgCount = 0;
-    for (let i = 0; i <= turnIndex; i++) {
-      sliceMsgCount += turns[i].toolSteps.length + 1;
+
+    // 精确定位: 用 turn.startMsgIdx 在原始 messages 数组里定位截断点
+    // - 右键 user turn: 保留该 user 消息及之前的所有消息, 删除后续(即重发该问题)
+    // - 右键 assistant turn: 保留到该 assistant 之前(即重新生成该回答)
+    const cutIdx = turn.role === "user" ? turn.startMsgIdx + 1 : turn.startMsgIdx;
+    const truncated = messages.slice(0, cutIdx);
+
+    // 确保 system 消息始终保留在开头
+    if (truncated.length === 0 || truncated[0].role !== "system") {
+      const sysMsg = messages.find(m => m.role === "system");
+      if (sysMsg) {
+        truncated.unshift(sysMsg);
+      }
     }
-    const truncated = messages.slice(0, sliceMsgCount);
+
+    // 若正在生成, 先打断当前生成再重试 (真正的「打断重试」)
+    if (loading) {
+      clearTypingBuffer();
+      try {
+        await invoke("abort_agent_turn");
+      } catch (e) {
+        console.error("打断生成失败:", e);
+      }
+      setLoading(false);
+      setAgentStatus("idle");
+    }
+
     setMessages(truncated);
     setLoading(true);
     setStreamingText("");
@@ -652,23 +677,15 @@ export default function App() {
   const handleEditUserTurn = (turnIndex: number, turn: ChatTurn) => {
     setMessageContextMenu(null);
     setInput(turn.content);
-    const turns = aggregateMessagesIntoTurns(messages);
-    let sliceMsgCount = 0;
-    for (let i = 0; i < turnIndex; i++) {
-      sliceMsgCount += turns[i].toolSteps.length + 1;
-    }
-    setMessages(messages.slice(0, sliceMsgCount));
+    // 编辑问题 = 保留到该 user turn 之前, 把问题放回输入框重发
+    setMessages(messages.slice(0, turn.startMsgIdx));
   };
 
-  const handleDeleteFromTurn = (turnIndex: number) => {
+  const handleDeleteFromTurn = (turnIndex: number, turn: ChatTurn) => {
     setMessageContextMenu(null);
     if (!confirm("确定要删除此消息及后续所有记录吗？")) return;
-    const turns = aggregateMessagesIntoTurns(messages);
-    let sliceMsgCount = 0;
-    for (let i = 0; i < turnIndex; i++) {
-      sliceMsgCount += turns[i].toolSteps.length + 1;
-    }
-    setMessages(messages.slice(0, sliceMsgCount));
+    // 删除 = 保留到该 turn 之前(不含该 turn 本身)
+    setMessages(messages.slice(0, turn.startMsgIdx));
   };
 
 
@@ -835,6 +852,9 @@ export default function App() {
   const [streamingThinking, setStreamingThinking] = useState<string>("");
   const [thinkingDuration, setThinkingDuration] = useState<number>(0);
   const [activeToolName, setActiveToolName] = useState<string | null>(null);
+  // 打字机缓冲 (对标原版 StreamingMarkdownText 节流策略): 事件快速入缓冲, 定时器匀速吐出
+  const typingBufferRef = useRef<string>("");
+  const typingTimerRef = useRef<any>(null);
   const [fallbackToast, setFallbackToast] = useState<string | null>(null);
 
   // 附件与拖拽
@@ -926,6 +946,15 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const thinkingTimerRef = useRef<any>(null);
 
+  // 打字机缓冲清理 (停止/中断时调用; 定义在监听器 effect 之前避免 TDZ)
+  const clearTypingBuffer = () => {
+    if (typingTimerRef.current) {
+      clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    typingBufferRef.current = "";
+  };
+
   useEffect(() => {
     const timer = setInterval(() => {
       setPlaceholderIndex(prev => (prev + 1) % ROTATING_PLACEHOLDERS.length);
@@ -972,10 +1001,10 @@ export default function App() {
         setAgentStatus(content);
         if (content === "answering") {
           setActiveToolName(null);
-          // 回答阶段收起小电脑
-          setComputerState(prev => ({ ...prev, isActive: false }));
+          // 回答阶段保留小电脑 (原版小电脑持续可见), 由 stopped/用户手动关闭
         }
         if (content === "stopped") {
+          clearTypingBuffer();
           setLoading(false);
           setAgentStatus("idle");
           setComputerState(prev => ({ ...prev, isActive: false }));
@@ -986,9 +1015,31 @@ export default function App() {
         setStreamingThinking(prev => prev + content);
       } else if (event_type === "token") {
         setAgentStatus("answering");
-        setStreamingText(prev => prev + content);
+        // 写入打字机缓冲, 由 effect 匀速吐出 (对标原版节流策略)
+        typingBufferRef.current += content;
+        if (!typingTimerRef.current) {
+          typingTimerRef.current = setInterval(() => {
+            if (typingBufferRef.current.length > 0) {
+              // 每次吐出最多 4 个字符 (可含中文), 保证流畅可见的打字效果
+              const chunk = typingBufferRef.current.slice(0, 4);
+              typingBufferRef.current = typingBufferRef.current.slice(4);
+              setStreamingText(prev => prev + chunk);
+            }
+          }, 30);
+        }
       } else if (event_type === "tool_start") {
-        const toolName = content.replace("正在调用: ", "");
+        // 新版事件: content = { tool, args }, 旧版兼容: content = "正在调用: xxx"
+        let toolName = "";
+        let toolArgs: any = {};
+        try {
+          const parsed = JSON.parse(content);
+          if (parsed.tool) {
+            toolName = parsed.tool;
+            toolArgs = parsed.args || {};
+          }
+        } catch (_) {
+          toolName = content.replace("正在调用: ", "");
+        }
         setActiveToolName(toolName);
         // 维护 FloatingToolBar 工具步骤
         const stepType = inferToolType(toolName);
@@ -999,18 +1050,57 @@ export default function App() {
           status: "running",
           toolType: stepType,
         }]);
-        // 驱动 Minis Computer 画中画小电脑
+        // 驱动 Minis Computer 画中画小电脑 (真实 URL/命令)
+        const realUrl = toolArgs?.url || "";
+        const realCmd = toolArgs?.command || toolArgs?.cmd || "";
         if (toolName === "browser_use") {
-          setComputerState(prev => ({ ...prev, isActive: true, toolType: "browser", title: "浏览网页", commandOrUrl: prev.commandOrUrl || "https://www.baidu.com" }));
+          setComputerState({
+            isActive: true,
+            toolType: "browser",
+            title: realUrl || "浏览网页",
+            commandOrUrl: realUrl || "https://www.baidu.com",
+          });
         } else if (toolName === "shell_execute") {
-          setComputerState(prev => ({ ...prev, isActive: true, toolType: "shell", title: "执行命令", commandOrUrl: prev.commandOrUrl || "minis" }));
+          setComputerState({
+            isActive: true,
+            toolType: "shell",
+            title: "执行命令",
+            commandOrUrl: realCmd || "minis",
+          });
         } else if (toolName === "file_read" || toolName === "file_write" || toolName === "file_edit") {
-          setComputerState(prev => ({ ...prev, isActive: true, toolType: "file", title: "文件操作", commandOrUrl: prev.commandOrUrl || toolName }));
+          setComputerState({
+            isActive: true,
+            toolType: "file",
+            title: "文件操作",
+            commandOrUrl: toolArgs?.path || toolName,
+          });
         } else {
-          setComputerState(prev => ({ ...prev, isActive: true, toolType: "other", title: toolName, commandOrUrl: prev.commandOrUrl || toolName }));
+          setComputerState({
+            isActive: true,
+            toolType: "other",
+            title: toolName,
+            commandOrUrl: toolName,
+          });
         }
       } else if (event_type === "tool_end") {
         setActiveToolName(null);
+        // 新版事件: content = { tool, output } -> 小电脑展示真实输出/截图预览
+        try {
+          const parsed = JSON.parse(content);
+          if (parsed.output !== undefined) {
+            setComputerState(prev => {
+              const next: any = { ...prev, outputSnippet: parsed.output };
+              // 截图路径 (minis://attachments/xxx.png) -> 小电脑浏览器视图实时预览
+              const imgMatch = String(parsed.output).match(/minis:\/\/attachments\/([\w\-\.]+\.(png|jpg|jpeg|gif|webp))/i);
+              if (imgMatch) {
+                next.previewImageUrl = `minis://attachments/${imgMatch[1]}`;
+              }
+              return next;
+            });
+          }
+        } catch (_) {
+          /* 旧版纯文本, 忽略 */
+        }
         // 标记最后一个 running step 为 success
         setToolSteps(prev => {
           const next = [...prev];
@@ -1258,6 +1348,7 @@ export default function App() {
     } catch (e) {
       console.error("停止生成失败:", e);
     }
+    clearTypingBuffer();
     setLoading(false);
     setAgentStatus("idle");
   };
@@ -1362,6 +1453,15 @@ export default function App() {
         { role: "assistant", content: `❌ 交互故障: ${err}` }
       ]);
     } finally {
+      // 打字机缓冲收尾: 先把剩余全部吐出, 再停定时器
+      if (typingTimerRef.current) {
+        clearInterval(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      if (typingBufferRef.current.length > 0) {
+        setStreamingText(prev => prev + typingBufferRef.current);
+        typingBufferRef.current = "";
+      }
       setLoading(false);
       setStreamingText("");
       setStreamingThinking("");
@@ -3372,7 +3472,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.15 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.16 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3416,7 +3516,7 @@ export default function App() {
                       setUpdateUrl("");
                       try {
                         const curVerRaw = await invoke<string>("get_app_version").catch(() => "");
-                        const curVer = curVerRaw ? `v${curVerRaw}` : "v1.13.0.15";
+                        const curVer = curVerRaw ? `v${curVerRaw}` : "v1.13.0.16";
                         const res = await fetch("https://api.github.com/repos/Siu-Leung/OpenMinis-PC/releases/latest");
                         if (res.ok) {
                           const data = await res.json();
@@ -3471,7 +3571,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.15 (Windows 测试版)
+                  当前版本：1.13.0.16 (Windows 测试版)
                 </div>
               </div>
             </div>
@@ -3667,7 +3767,7 @@ export default function App() {
               </button>
               <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
               <button
-                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex)}
+                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
                 className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -3708,7 +3808,7 @@ export default function App() {
               </button>
               <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
               <button
-                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex)}
+                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
                 className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
               >
                 <Trash2 className="w-3.5 h-3.5" />

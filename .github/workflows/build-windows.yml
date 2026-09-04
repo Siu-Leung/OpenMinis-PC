@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.15 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.15_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.15_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.15.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.16 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.16_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.16_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.16.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,24 +74,21 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.15
+      - name: Update GitHub Release v1.13.0.16
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.15 (Windows 测试版)
-          tag_name: v1.13.0.15
+          name: OpenMinis Windows v1.13.0.16 (Windows 测试版)
+          tag_name: v1.13.0.16
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.15 (环境变量 + 截图修复 + 流式优化 + 多模态检测 + Agent 供应商管理)
+            ### 📦 OpenMinis for Windows v1.13.0.16 (右键打断重试修复 + 小电脑真实预览 + 打字机流式)
             > **⚠️ 备注：Windows 测试版 (Experimental)**
             
-            - **环境变量管理**：新增环境变量设置项（对标原版 EnvironmentVariablesScreen），配置的变量自动注入沙箱 shell 执行
-            - **修复截图发不出图片**：Edge 截图直写沙箱 UNC 路径，Agent 在沙箱内可直接访问（根因：宿主机/沙箱路径不一致）
-            - **流式渲染优化**：流式时改用轻量纯文本渲染，消除 Markdown 全量解析导致的卡顿闪烁，完成后才渲染 Markdown
-            - **模型错误友好化**：提取 LLM 错误 JSON 的 message 字段，友好展示 cooldown/限流等错误
-            - **修复多模态检测误判**：发纯红图问颜色真实验证（对标原版 looksBlind），修复所有模型都被误判「支持图文」
-            - **Agent 供应商管理**：供应商迁移后端 + list_providers/add_provider 工具
-            - **统一设计规范**：语义化 CSS 变量 + 主题切换修复 + 聊天 UI 颜色对齐原版
-            - **浮动工具状态栏**：输入栏上方工具执行状态条（对标原版 FloatingToolBar）
-            - **自动添加 /v1 修复** + **日志系统接入真实写入与开关**
+            - **修复右键「打断重试」删掉问题**：根因是 turn→message 索引映射错误（用 turn 数 slice messages 数组），现在用 turn.startMsgIdx 精确定位截断点，问题不再丢失；编辑/删除同步修复
+            - **真正的「打断重试」**：生成中右键重试会先中断当前生成再重发
+            - **小电脑真实内容**：tool_start 事件现在携带工具参数 JSON（真实 URL/命令），小电脑显示 Agent 正在访问的真实网页/命令；tool_end 携带执行输出片段，浏览器截图直接在小电脑内实时预览（minis:// 转 data URL）
+            - **小电脑持续可见**：回答阶段不再收起小电脑（对标原版持续画中画），任务结束才收起
+            - **打字机流式效果**：token 事件先进缓冲、定时器匀速吐出（对标原版 StreamingMarkdownText 节流策略），网关一次性返回也能看到打字效果
+            - **环境变量管理** + **截图发不出图片修复** + **模型错误友好化** + **多模态检测修复** + **Agent 供应商管理** + **设计规范** + **浮动工具状态栏**
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
