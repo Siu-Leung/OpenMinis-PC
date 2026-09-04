@@ -343,8 +343,9 @@ impl AgentEngine {
                 let resp = match send_res {
                     Ok(r) if r.status().is_success() => r,
                     Ok(err_resp) => {
+                        let status_code = err_resp.status().as_u16();
                         let err_text = err_resp.text().await.unwrap_or_default();
-                        last_error_msg = format!("HTTP {}: {}", err_resp.status().as_u16(), extract_llm_error(&err_text));
+                        last_error_msg = format!("HTTP {}: {}", status_code, extract_llm_error(&err_text));
                         continue;
                     }
                     Err(e) => {
