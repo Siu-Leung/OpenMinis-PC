@@ -41,10 +41,23 @@ import {
   Info,
   Shield,
   FileCode,
-  Power
+  Power,
+  Square,
+  Play,
+  MoreHorizontal,
+  Palette,
+  Puzzle,
+  HardDrive,
+  Heart,
+  Volume2
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
+import { CodeBlock } from "./components/CodeBlock";
+import { ToolLiveModal } from "./components/ToolLiveModal";
 
 interface ChatMessage {
   role: "user" | "assistant" | "tool" | "system";
@@ -66,48 +79,33 @@ interface Provider {
 }
 
 interface AgentConfig {
+  session_id?: string;
   provider_id?: string;
   provider_url: string;
   api_key: string;
   model: string;
   fallback_models?: string[];
+  system_prompt?: string;
   thinking_level?: string;
   thinking_budget?: number;
-}
-
-interface StreamEvent {
-  event_type: "status" | "thinking" | "token" | "tool_start" | "tool_end" | "fallback" | "error";
-  content: string;
 }
 
 interface SessionRecord {
   id: string;
   title: string;
-  created_at: string;
-  message_count: number;
+  created_at: number;
+  updated_at: number;
   preview: string;
 }
 
-interface ModelGroupItem {
-  id: string;
-  name: string;
-  is_primary: boolean;
-  fallback_models: string[];
-  description?: string;
-}
-
-interface DefaultsConfig {
-  default_primary_group: string;
-  default_sub_model: string;
-  voice_input: string;
-  voice_output: string;
-  vision_input: string;
-}
-
-interface FullModelGroupsState {
-  groups: ModelGroupItem[];
-  defaults: DefaultsConfig;
-  agent_loop_models: { id: string; name: string; is_group: boolean; model_count: number }[];
+interface SingleUsageRecord {
+  timestamp: number;
+  session_id: string;
+  model_id: string;
+  provider_id: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
 }
 
 interface ModelDetailMetrics {
@@ -144,14 +142,33 @@ interface TotalUsageDashboard {
   model_rankings: ModelUsageSummary[];
 }
 
-interface McpServerItem {
+interface ModelGroupItem {
   id: string;
   name: string;
-  server_type: string;
-  command_or_url: string;
-  enabled: boolean;
-  tools_count: number;
+  is_primary: boolean;
+  fallback_models: string[];
   description?: string;
+}
+
+interface DefaultsConfig {
+  default_primary_group: string;
+  default_sub_model: string;
+  voice_input: string;
+  voice_output: string;
+  vision_input: string;
+}
+
+interface AgentLoopModelEntry {
+  id: string;
+  name: string;
+  is_group: boolean;
+  model_count: number;
+}
+
+interface FullModelGroupsState {
+  groups: ModelGroupItem[];
+  defaults: DefaultsConfig;
+  agent_loop_models: AgentLoopModelEntry[];
 }
 
 interface SandboxDiagnostics {
@@ -162,21 +179,169 @@ interface SandboxDiagnostics {
   isolationText: string;
 }
 
+interface McpServer {
+  id: string;
+  name: string;
+  server_type: string;
+  command_or_url: string;
+  enabled: boolean;
+  tools_count: number;
+  description?: string;
+}
+
+interface SkillItem {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  enabled: boolean;
+}
+
+interface SoulConfig {
+  name: string;
+  instruction: string;
+  active: boolean;
+}
+
+interface MountedFolderItem {
+  id: string;
+  name: string;
+  host_path: string;
+  sandbox_mount_path: string;
+  is_mounted: boolean;
+}
+
 interface AttachmentItem {
   id: string;
   name: string;
-  dataUrl: string;
   isMedia: boolean;
   sizeStr: string;
+  dataUrl: string;
 }
 
 const AVATAR_COLORS = [
-  { bg: "bg-[#E8F5E9]", text: "text-[#2E7D32]" },
-  { bg: "bg-[#FFF3E0]", text: "text-[#E65100]" },
-  { bg: "bg-[#E1F5FE]", text: "text-[#0277BD]" },
-  { bg: "bg-[#F3E5F5]", text: "text-[#7B1FA2]" },
-  { bg: "bg-[#FBE9E7]", text: "text-[#D84315]" },
+  { bg: "bg-[#E1F5FE]", text: "text-[#0288D1]" },
+  { bg: "bg-[#EDE7F6]", text: "text-[#5E35B1]" },
+  { bg: "bg-[#E8F5E9]", text: "text-[#388E3C]" },
+  { bg: "bg-[#FFF3E0]", text: "text-[#F57C00]" },
+  { bg: "bg-[#FCE4EC]", text: "text-[#C2185B]" },
 ];
+
+const ROTATING_PLACEHOLDERS = [
+  "发送给 Minis...",
+  "在 Alpine 沙箱中编写并执行 Python 脚本...",
+  "使用 Edge 浏览器自动化提取网页正文...",
+  "分析 /var/minis/workspace 中的数据并制表...",
+  "开启高强度深度思考推演复杂任务...",
+];
+
+function getToolDisplayInfo(content: string) {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed.exit_code !== undefined) {
+      return {
+        name: "shell_execute",
+        icon: Terminal,
+        label: "Linux Shell 终端执行",
+        color: "text-[#34C759]",
+        detail: `命令退出码: ${parsed.exit_code}\n\n标准输出:\n${parsed.stdout || "(空)"}\n\n标准错误:\n${parsed.stderr || "(无)"}`,
+        content,
+      };
+    }
+    if (parsed.path && parsed.content !== undefined) {
+      return {
+        name: "file_read",
+        icon: FileText,
+        label: `读取文件: ${parsed.path}`,
+        color: "text-[#0A84FF]",
+        detail: parsed.content,
+        content,
+      };
+    }
+    if (parsed.path && parsed.success) {
+      return {
+        name: "file_write",
+        icon: FileText,
+        label: `写入文件: ${parsed.path}`,
+        color: "text-[#30D158]",
+        detail: `已成功保存到: ${parsed.path}\n统一资源直链: ${parsed.minis_url || ""}`,
+        content,
+      };
+    }
+    if (parsed.data || parsed.success !== undefined) {
+      return {
+        name: "browser_use",
+        icon: Globe,
+        label: "Edge 浏览器自动化",
+        color: "text-[#32ADE6]",
+        detail: parsed.data || JSON.stringify(parsed, null, 2),
+        content,
+      };
+    }
+    if (parsed.clipboard_text !== undefined) {
+      return {
+        name: "clipboard_read",
+        icon: Copy,
+        label: "读取 Windows 剪贴板",
+        color: "text-[#FF9500]",
+        detail: parsed.clipboard_text || "(剪贴板为空)",
+        content,
+      };
+    }
+    if (parsed.results) {
+      return {
+        name: "memory_search",
+        icon: Brain,
+        label: `回忆检索结果 (${parsed.results.length}条)`,
+        color: "text-[#BF5AF2]",
+        detail: JSON.stringify(parsed.results, null, 2),
+        content,
+      };
+    }
+  } catch {}
+
+  return {
+    name: "tool",
+    icon: Terminal,
+    label: "工具调度执行结果",
+    color: "text-[#0A84FF]",
+    detail: content,
+    content,
+  };
+}
+
+function groupSessionsByDate(sessions: SessionRecord[]) {
+  const groups: { label: string; items: SessionRecord[] }[] = [
+    { label: "今天", items: [] },
+    { label: "昨天", items: [] },
+    { label: "过去 7 天", items: [] },
+    { label: "过去 30 天", items: [] },
+    { label: "更早", items: [] },
+  ];
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 86400000;
+  const startOf7Days = startOfToday - 7 * 86400000;
+  const startOf30Days = startOfToday - 30 * 86400000;
+
+  for (const s of sessions) {
+    const time = s.updated_at ? s.updated_at * 1000 : startOfToday;
+    if (time >= startOfToday) {
+      groups[0].items.push(s);
+    } else if (time >= startOfYesterday) {
+      groups[1].items.push(s);
+    } else if (time >= startOf7Days) {
+      groups[2].items.push(s);
+    } else if (time >= startOf30Days) {
+      groups[3].items.push(s);
+    } else {
+      groups[4].items.push(s);
+    }
+  }
+
+  return groups.filter(g => g.items.length > 0);
+}
 
 export default function App() {
   // 沙箱状态与向导
@@ -195,12 +360,12 @@ export default function App() {
   const [sessionSearch, setSessionSearch] = useState("");
   const [showTopMenu, setShowTopMenu] = useState(false);
 
-  // 1:1 对标截图：全功能设置模态窗口及其子页面路由
+  // 全功能设置模态窗口及其子页面路由
   const [settingsView, setSettingsView] = useState<
-    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about"
+    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about" | "appearance" | "skills" | "soul" | "mounts"
   >("none");
 
-  // 内置独立浏览器窗口状态 (完全不依赖沙箱，开箱即用)
+  // 内置独立浏览器窗口状态
   const [showBrowserWindow, setShowBrowserWindow] = useState<boolean>(false);
   const [browserUrl, setBrowserUrl] = useState<string>("https://cn.bing.com");
   const [currentNavUrl, setCurrentNavUrl] = useState<string>("https://cn.bing.com");
@@ -212,7 +377,7 @@ export default function App() {
     headlessDefault: true,
   });
 
-  // 纯净开箱：供应商默认纯空！
+  // 供应商状态
   const [providers, setProviders] = useState<Provider[]>(() => {
     const saved = localStorage.getItem("openminis_providers_v4_clean");
     return saved ? JSON.parse(saved) : [];
@@ -227,7 +392,7 @@ export default function App() {
     return localStorage.getItem("openminis_thinking_level") || "high";
   });
 
-  // 纯净开箱：模型组默认纯空！
+  // 模型组状态
   const [modelGroupsState, setModelGroupsState] = useState<FullModelGroupsState>({
     groups: [],
     defaults: {
@@ -240,7 +405,7 @@ export default function App() {
     agent_loop_models: []
   });
 
-  // 纯净开箱：Token 用量默认纯 0！
+  // Token 用量仪表盘
   const [usageDashboard, setUsageDashboard] = useState<TotalUsageDashboard>({
     total_input_tokens: 0,
     total_output_tokens: 0,
@@ -257,33 +422,52 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境。支持多供应商管理、模型组自动回退、深度思考模式与真机浏览器自动化。随时提出要求！"
+      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境。支持多供应商管理、模型组自动回退、深度思考模式与真机浏览器自动化。随时提出任务！"
     }
   ]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [agentStatus, setAgentStatus] = useState<"idle" | "connecting" | "thinking" | "answering">("idle");
-  const [streamingText, setStreamingText] = useState("");
-  const [streamingThinking, setStreamingThinking] = useState("");
+  const [input, setInput] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [agentStatus, setAgentStatus] = useState<string>("idle");
+  const [streamingText, setStreamingText] = useState<string>("");
+  const [streamingThinking, setStreamingThinking] = useState<string>("");
   const [thinkingDuration, setThinkingDuration] = useState<number>(0);
   const [activeToolName, setActiveToolName] = useState<string | null>(null);
   const [fallbackToast, setFallbackToast] = useState<string | null>(null);
 
-  // 输入框待发附件
+  // 附件与拖拽
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 折叠卡片状态
-  const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
-  const [expandedTools, setExpandedTools] = useState<Record<number, boolean>>({});
-  const [expandedUsageModels, setExpandedUsageModels] = useState<Record<string, boolean>>({});
+  // 展开与交互状态
+  const [expandedThinking, setExpandedThinking] = useState<{ [key: number]: boolean }>({});
+  const [expandedTools, setExpandedTools] = useState<{ [key: number]: boolean }>({});
+  const [expandedUsageModels, setExpandedUsageModels] = useState<{ [key: string]: boolean }>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [showModelPicker, setShowModelPicker] = useState<boolean>(false);
+  const [selectedToolDetail, setSelectedToolDetail] = useState<any | null>(null);
 
-  // 顶栏下拉
-  const [showModelPicker, setShowModelPicker] = useState(false);
-  const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
+  // 外观与主题
+  const [themeMode, setThemeMode] = useState<"dark" | "light" | "system">(() => {
+    return (localStorage.getItem("openminis_theme_mode") as any) || "dark";
+  });
+  const [oledMode, setOledMode] = useState<boolean>(() => {
+    return localStorage.getItem("openminis_oled_mode") === "true";
+  });
+  const [accentColor, setAccentColor] = useState<string>(() => {
+    return localStorage.getItem("openminis_accent_color") || "#0A84FF";
+  });
+
+  // 技能、灵魂与外部挂载
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [soulConfig, setSoulConfig] = useState<SoulConfig>({ name: "Minis", instruction: "", active: true });
+  const [mountedFolders, setMountedFolders] = useState<MountedFolderItem[]>([]);
+  const [newMountHost, setNewMountHost] = useState("");
+  const [newMountName, setNewMountName] = useState("");
+
+  // MCP、记忆与诊断
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [memoryText, setMemoryText] = useState("");
+  const [globalMemoryText, setGlobalMemoryText] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [sandboxDiag, setSandboxDiag] = useState<SandboxDiagnostics>({
     isInstalled: true,
@@ -294,65 +478,80 @@ export default function App() {
   });
   const [repairingSandbox, setRepairingSandbox] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [updateMsg, setUpdateMsg] = useState("");
 
-  const loadSandboxDiag = async () => {
-    try {
-      const diag = await invoke<SandboxDiagnostics>("get_sandbox_diagnostics");
-      setSandboxDiag(diag);
-    } catch (_) {}
-  };
+  // 动态旋转占位符
+  const [placeholderIndex, setPlaceholderIndex] = useState(0);
 
-  const handleStartAutoInit = async () => {
-    setShowInitModal(true);
-    setInitPercent(5);
-    setInitCurrentText("准备沙箱配置环境...");
-    setInitLogs(["正在启动 WSL2 Alpine 沙箱自动初始化..."]);
-    setInitError(null);
-
-    try {
-      await invoke("auto_initialize_sandbox");
-      setSandboxReady(true);
-      loadSandboxDiag();
-    } catch (err: any) {
-      setInitError(err?.toString() || "沙箱初始化发生异常");
-    }
-  };
-
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const thinkingTimerRef = useRef<any>(null);
 
-  // 获取当前所有供应商拉取到的模型总池
-  const allAvailableModels = providers.flatMap(p => p.models);
-  const activeProvider = providers.find(p => p.id === activeProviderId) || providers[0];
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setPlaceholderIndex(prev => (prev + 1) % ROTATING_PLACEHOLDERS.length);
+    }, 6000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
-    checkSandbox();
-    refreshSessions();
-    loadModelGroups();
-    loadUsageDashboard();
-    loadMcpServers();
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streamingText, streamingThinking, attachments, activeToolName]);
 
-    const unlistenStream = listen<StreamEvent>("agent-stream", (event) => {
-      const payload = event.payload;
-      if (payload.event_type === "status") {
-        if (payload.content === "thinking") setAgentStatus("thinking");
-        else if (payload.content === "answering") setAgentStatus("answering");
-        else if (payload.content === "connecting") setAgentStatus("connecting");
-      } else if (payload.event_type === "thinking") {
+  useEffect(() => {
+    if (agentStatus === "thinking") {
+      const start = Date.now();
+      thinkingTimerRef.current = setInterval(() => {
+        setThinkingDuration(Math.round((Date.now() - start) / 100) / 10);
+      }, 100);
+    } else if (thinkingTimerRef.current) {
+      clearInterval(thinkingTimerRef.current);
+      thinkingTimerRef.current = null;
+    }
+  }, [agentStatus]);
+
+  useEffect(() => {
+    invoke<boolean>("check_sandbox_status").then(ready => {
+      setSandboxReady(ready);
+    }).catch(() => setSandboxReady(false));
+
+    loadSessions();
+    loadModelGroups();
+    loadUsage();
+    loadMcpServers();
+    loadSkills();
+    loadSoul();
+    loadMounts();
+  }, []);
+
+  // 监听 Agent 流式事件
+  useEffect(() => {
+    const unlistenPromise = listen<{ event_type: string; content: string }>("agent-stream", event => {
+      const { event_type, content } = event.payload;
+      if (event_type === "status") {
+        setAgentStatus(content);
+        if (content === "answering") setActiveToolName(null);
+        if (content === "stopped") {
+          setLoading(false);
+          setAgentStatus("idle");
+        }
+      } else if (event_type === "thinking") {
         setAgentStatus("thinking");
-        setStreamingThinking(prev => prev + payload.content);
-      } else if (payload.event_type === "token") {
+        setStreamingThinking(prev => prev + content);
+      } else if (event_type === "token") {
         setAgentStatus("answering");
-        setStreamingText(prev => prev + payload.content);
-      } else if (payload.event_type === "tool_start") {
-        setActiveToolName(payload.content);
-      } else if (payload.event_type === "tool_end") {
+        setStreamingText(prev => prev + content);
+      } else if (event_type === "tool_start") {
+        setActiveToolName(content.replace("正在调用: ", ""));
+      } else if (event_type === "tool_end") {
         setActiveToolName(null);
-      } else if (payload.event_type === "fallback") {
-        setFallbackToast(payload.content);
+      } else if (event_type === "fallback") {
+        setFallbackToast(content);
         setTimeout(() => setFallbackToast(null), 5000);
+      } else if (event_type === "stopped") {
+        setLoading(false);
+        setAgentStatus("idle");
       }
     });
 
@@ -372,34 +571,26 @@ export default function App() {
     } catch (_) {}
 
     return () => {
-      unlistenStream.then(un => un());
+      unlistenPromise.then(unlisten => unlisten());
       if (unlistenWebviewDrop) unlistenWebviewDrop();
-      if (thinkingTimerRef.current) clearInterval(thinkingTimerRef.current);
     };
   }, []);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, streamingThinking, activeToolName, agentStatus, attachments]);
-
-  useEffect(() => {
-    if (agentStatus === "thinking") {
-      const start = Date.now();
-      thinkingTimerRef.current = setInterval(() => {
-        setThinkingDuration(Math.round((Date.now() - start) / 100) / 10);
-      }, 100);
-    } else if (thinkingTimerRef.current) {
-      clearInterval(thinkingTimerRef.current);
-      thinkingTimerRef.current = null;
-    }
-  }, [agentStatus]);
-
-  const checkSandbox = async () => {
+  const loadSessions = async () => {
     try {
-      const ready = await invoke<boolean>("check_sandbox_status");
-      setSandboxReady(ready);
-    } catch (_) {
-      setSandboxReady(false);
+      const res = await invoke<SessionRecord[]>("list_sessions");
+      setSessions(res || []);
+    } catch (e) {
+      console.error("加载会话失败:", e);
+    }
+  };
+
+  const loadUsage = async () => {
+    try {
+      const dash = await invoke<TotalUsageDashboard>("get_usage_dashboard");
+      setUsageDashboard(dash);
+    } catch (e) {
+      console.error("加载用量统计失败:", e);
     }
   };
 
@@ -407,33 +598,76 @@ export default function App() {
     try {
       const state = await invoke<FullModelGroupsState>("get_model_groups_state");
       setModelGroupsState(state);
-    } catch (_) {}
-  };
-
-  const loadUsageDashboard = async () => {
-    try {
-      const dash = await invoke<TotalUsageDashboard>("get_usage_dashboard");
-      setUsageDashboard(dash);
-    } catch (_) {}
+    } catch (e) {
+      console.error("加载模型组状态失败:", e);
+    }
   };
 
   const loadMcpServers = async () => {
     try {
-      const list = await invoke<McpServerItem[]>("list_mcp_servers");
-      setMcpServers(list);
-    } catch (_) {}
+      const s = await invoke<McpServer[]>("list_mcp_servers");
+      setMcpServers(s);
+    } catch (e) {}
   };
 
-  const refreshSessions = async () => {
+  const loadSkills = async () => {
     try {
-      const list = await invoke<SessionRecord[]>("list_sessions");
-      setSessions(list);
-    } catch (_) {}
+      const res = await invoke<SkillItem[]>("list_skills");
+      setSkills(res || []);
+    } catch (e) {}
+  };
+
+  const loadSoul = async () => {
+    try {
+      const res = await invoke<SoulConfig>("get_soul_config");
+      setSoulConfig(res);
+    } catch (e) {}
+  };
+
+  const loadMounts = async () => {
+    try {
+      const res = await invoke<MountedFolderItem[]>("list_mounted_folders");
+      setMountedFolders(res || []);
+    } catch (e) {}
+  };
+
+  const loadMemories = async () => {
+    try {
+      const today = await invoke<string>("get_today_memory");
+      setMemoryText(today);
+      const global = await invoke<string>("get_global_memory");
+      setGlobalMemoryText(global);
+    } catch (e) {}
+  };
+
+  const loadSandboxDiag = async () => {
+    try {
+      const diag = await invoke<SandboxDiagnostics>("get_sandbox_diagnostics");
+      setSandboxDiag(diag);
+    } catch (e) {
+      console.error("诊断异常:", e);
+    }
   };
 
   const saveProviders = (newProviders: Provider[]) => {
     setProviders(newProviders);
     localStorage.setItem("openminis_providers_v4_clean", JSON.stringify(newProviders));
+  };
+
+  const handleStartAutoInit = async () => {
+    setShowInitModal(true);
+    setInitPercent(5);
+    setInitCurrentText("准备沙箱配置环境...");
+    setInitLogs(["正在启动 WSL2 Alpine 沙箱自动初始化..."]);
+    setInitError(null);
+
+    try {
+      await invoke("auto_initialize_sandbox");
+      setSandboxReady(true);
+      loadSandboxDiag();
+    } catch (err: any) {
+      setInitError(err?.toString() || "沙箱初始化发生异常");
+    }
   };
 
   const handleImportFilePaths = async (paths: string[]) => {
@@ -445,7 +679,6 @@ export default function App() {
     }
   };
 
-  // 剪贴板图片粘贴 (Ctrl+V)
   const handlePaste = (e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
     for (let i = 0; i < items.length; i++) {
@@ -472,340 +705,272 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  // 停止当前 Agent 生成流
+  const handleStopGeneration = async () => {
+    try {
+      await invoke("abort_agent_turn");
+    } catch (e) {
+      console.error("停止生成失败:", e);
+    }
+    setLoading(false);
+    setAgentStatus("idle");
+  };
+
+  // 压缩上下文 (Compact Messages)
+  const handleCompactMessages = () => {
+    if (messages.length <= 3) return;
+    const toCompact = messages.slice(1, -2);
+    const summary = `[上下文历史摘要 (Compacted Context)]: 包含 ${toCompact.length} 条历史消息轮次，涵盖前期讨论内容与工具调用执行结论。`;
+    setMessages([
+      messages[0],
+      { role: "system", content: summary },
+      ...messages.slice(-2)
+    ]);
+  };
+
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || loading) return;
 
-    if (!activeProvider || (!activeProvider.api_key && activeProvider.id !== "ollama")) {
-      setSettingsView("providers");
+    const currentProvider = providers.find(p => p.id === activeProviderId) || providers[0];
+    if (!currentProvider || !activeModel) {
+      alert("请先点击顶栏模型胶囊，或进入设置配置 AI 服务商与选择模型！");
       return;
     }
 
-    const currentAttachments = [...attachments];
-    setAttachments([]);
-
-    let promptText = input.trim();
-    const uploadedImages: string[] = [];
-    const uploadedFiles: { name: string; url: string; sizeStr?: string }[] = [];
-
-    for (const att of currentAttachments) {
-      try {
-        const minisUrl = await invoke<string>("upload_chat_attachment", {
-          name: att.name,
-          base64Data: att.dataUrl,
-          isMedia: att.isMedia
-        });
-        if (att.isMedia) {
-          uploadedImages.push(att.dataUrl);
-          promptText += `\n\n[附带图片: ${minisUrl}]`;
-        } else {
-          uploadedFiles.push({ name: att.name, url: minisUrl, sizeStr: att.sizeStr });
-          promptText += `\n\n[附带文件: ${minisUrl} (${att.sizeStr})]`;
-        }
-      } catch (err) {
-        console.error("上传附件失败:", err);
-      }
-    }
+    const userImages = attachments.filter(a => a.isMedia).map(a => a.dataUrl);
+    const userFiles = attachments.filter(a => !a.isMedia).map(a => ({ name: a.name, url: a.dataUrl, sizeStr: a.sizeStr }));
 
     const userMsg: ChatMessage = {
       role: "user",
-      content: promptText || "请分析已上传的图片/文件",
-      images: uploadedImages.length > 0 ? uploadedImages : undefined,
-      files: uploadedFiles.length > 0 ? uploadedFiles : undefined
+      content: input.trim(),
+      images: userImages.length > 0 ? userImages : undefined,
+      files: userFiles.length > 0 ? userFiles : undefined,
     };
 
-    const nextHistory = [...messages, userMsg];
-    setMessages(nextHistory);
+    const newHistory = [...messages, userMsg];
+    setMessages(newHistory);
     setInput("");
+    setAttachments([]);
     setLoading(true);
-    setAgentStatus("connecting");
     setStreamingText("");
     setStreamingThinking("");
-    setThinkingDuration(0);
-    setActiveToolName(null);
+    setAgentStatus("connecting");
 
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    // 计算当前模型所在模型组的 fallback 候选列表
+    let fallbackList: string[] = [];
+    const matchedGroup = modelGroupsState.groups.find(g => g.name === activeModel || g.fallback_models.includes(activeModel));
+    if (matchedGroup) {
+      fallbackList = matchedGroup.fallback_models.filter(m => m !== activeModel);
+    }
 
-    const primaryGroup = modelGroupsState.groups.find(g => g.name === modelGroupsState.defaults.default_primary_group);
-    const fallbackList = primaryGroup ? primaryGroup.fallback_models : [];
-
-    const agentCfg: AgentConfig = {
-      provider_id: activeProvider.id,
-      provider_url: activeProvider.provider_url,
-      api_key: activeProvider.api_key,
+    const config: AgentConfig = {
+      session_id: currentSessionId || undefined,
+      provider_id: currentProvider.id,
+      provider_url: currentProvider.provider_url,
+      api_key: currentProvider.api_key,
       model: activeModel,
-      fallback_models: fallbackList,
+      fallback_models: fallbackList.length > 0 ? fallbackList : undefined,
       thinking_level: thinkingLevel,
     };
 
     try {
-      const updated = await invoke<ChatMessage[]>("run_agent_turn", {
-        config: agentCfg,
+      const updatedHistory = await invoke<ChatMessage[]>("run_agent_turn", {
+        config,
         sessionId: currentSessionId,
-        messages: nextHistory
+        messages: newHistory,
       });
-      setMessages(updated);
-      refreshSessions();
-      loadUsageDashboard();
+      setMessages(updatedHistory);
+      loadSessions();
+      loadUsage();
     } catch (err: any) {
       setMessages(prev => [
         ...prev,
-        { role: "assistant", content: `⚠️ 执行出错: ${err?.toString() || "网络或服务异常"}` }
+        { role: "assistant", content: `❌ 交互故障: ${err}` }
       ]);
     } finally {
       setLoading(false);
-      setAgentStatus("idle");
       setStreamingText("");
       setStreamingThinking("");
-      setActiveToolName(null);
+      setAgentStatus("idle");
     }
   };
 
-  const getToolDisplayInfo = (content: string) => {
-    try {
-      const parsed = JSON.parse(content);
-      if (parsed.exit_code !== undefined) {
-        return { label: "shell_execute", icon: Terminal, color: "text-[#34C759]", detail: parsed.stdout || parsed.stderr };
-      }
-      if (parsed.content !== undefined) {
-        return { label: "file_read", icon: FileText, color: "text-[#32ADE6]", detail: parsed.content };
-      }
-      if (parsed.minis_url !== undefined) {
-        return { label: "file_write", icon: FileText, color: "text-[#32ADE6]", detail: `已写入: ${parsed.path}` };
-      }
-      if (parsed.data !== undefined) {
-        return { label: "browser_use", icon: Globe, color: "text-[#0A84FF]", detail: parsed.data };
-      }
-    } catch (_) {}
-    return { label: "tool", icon: Terminal, color: "text-[#8E8E93]", detail: content };
-  };
+  const allAvailableModels = providers.flatMap(p => p.models || []);
+  const activeProvider = providers.find(p => p.id === activeProviderId) || providers[0];
+  const filteredSessions = sessionSearch.trim()
+    ? sessions.filter(s =>
+        s.title.toLowerCase().includes(sessionSearch.toLowerCase()) ||
+        (s.preview && s.preview.toLowerCase().includes(sessionSearch.toLowerCase()))
+      )
+    : sessions;
+  const sessionGroups = groupSessionsByDate(filteredSessions);
 
   return (
-    <div 
-      onDrop={e => {
-        e.preventDefault();
-        if (e.dataTransfer.files) {
-          for (let i = 0; i < e.dataTransfer.files.length; i++) processFile(e.dataTransfer.files[i]);
-        }
-      }}
-      onDragOver={e => e.preventDefault()}
-      className="flex h-screen w-screen bg-[#F2F2F7] dark:bg-[#000000] text-[#000000] dark:text-[#FFFFFF] font-sans antialiased overflow-hidden select-none relative"
-    >
-      {/* 拖拽进入高亮遮罩 */}
-      {isDraggingOver && (
-        <div className="absolute inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-8 border-2 border-dashed border-[#0A84FF] rounded-2xl m-3 pointer-events-none">
-          <div className="flex flex-col items-center gap-3 text-center">
-            <Plus className="w-10 h-10 text-[#0A84FF]" />
-            <div className="text-base font-semibold text-white">松开鼠标，将文件/图片附加到会话中</div>
-          </div>
-        </div>
-      )}
-
-      {/* 回退提示 Toast */}
-      {fallbackToast && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-[#FF9F0A]/90 text-black text-xs font-semibold shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-top-3">
-          <AlertTriangle className="w-4 h-4" />
-          <span>{fallbackToast}</span>
-        </div>
-      )}
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={e => {
-          if (e.target.files) {
-            for (let i = 0; i < e.target.files.length; i++) processFile(e.target.files[i]);
-          }
-        }}
-      />
-
+    <div className={`flex h-screen w-screen overflow-hidden select-none font-sans ${oledMode ? "bg-[#000000]" : "bg-[#F2F2F7] dark:bg-[#000000]"} text-[#1C1C1E] dark:text-[#F2F2F7]`}>
       {/* =========================================================================
-          1. 会话主列表 (1:1 完美复刻截图 1000143307.jpg)
+          1. 会话主列表 (智能时间分段 + 搜索 + 1:1 原版质感)
       ========================================================================= */}
       {sidebarOpen && (
-        <aside className="w-[300px] h-full bg-[#F7F7F9] dark:bg-[#000000] border-r border-[#E5E5EA] dark:border-[#1C1C1E] flex flex-col justify-between shrink-0 z-20">
-          <div className="flex flex-col h-full min-h-0">
-            {/* 顶栏：⚙️ 设置按钮 + "Minis" 标题 + 🕒 用量快捷入口 + [>_] 终端快捷入口 */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E5EA] dark:border-[#1C1C1E]">
-              <button
-                onClick={() => setSettingsView("root")}
-                className="p-1 rounded-lg text-[#1C1C1E] dark:text-[#FFFFFF] hover:bg-[#E5E5EA] dark:hover:bg-[#1C1C1E] transition"
-                title="设置"
-              >
-                <SettingsIcon className="w-5 h-5" />
-              </button>
-
-              <h1 className="text-lg font-bold tracking-tight text-[#1C1C1E] dark:text-[#FFFFFF]">Minis</h1>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setSettingsView("usage")}
-                  className="p-1 rounded-lg text-[#1C1C1E] dark:text-[#FFFFFF] hover:bg-[#E5E5EA] dark:hover:bg-[#1C1C1E] transition"
-                  title="Token 用量"
-                >
-                  <Clock className="w-5 h-5" />
-                </button>
-                <button
-                  onClick={() => setShowTopMenu(!showTopMenu)}
-                  className="p-1 rounded-lg text-[#1C1C1E] dark:text-[#FFFFFF] hover:bg-[#E5E5EA] dark:hover:bg-[#1C1C1E] transition relative"
-                  title="功能菜单"
-                >
-                  <Terminal className="w-5 h-5" />
-                </button>
+        <aside className="w-64 border-r border-[#E5E5EA] dark:border-[#1C1C1E] flex flex-col shrink-0 bg-white/80 dark:bg-[#0C0C0E]/95 backdrop-blur-xl z-20 transition-all">
+          {/* 顶栏控制 */}
+          <div className="p-3.5 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-[#0A84FF] flex items-center justify-center text-white shadow-sm font-black text-xs">
+                M
               </div>
+              <span className="font-bold text-sm text-[#1C1C1E] dark:text-[#FFFFFF] tracking-tight">OpenMinis</span>
             </div>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="p-1 rounded-lg text-[#8E8E93] hover:text-[#1C1C1E] dark:hover:text-[#FFFFFF] hover:bg-[#E5E5EA] dark:hover:bg-[#1C1C1E] transition"
+              title="收起侧边栏"
+            >
+              <PanelLeft className="w-4 h-4" />
+            </button>
+          </div>
 
-            {/* 右上角原生弹出菜单 (1:1 复刻截图 1000143307.jpg 菜单) */}
-            {showTopMenu && (
-              <div className="absolute top-14 left-44 w-48 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 text-xs text-[#1C1C1E] dark:text-[#FFFFFF] space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
-                <button
-                  onClick={async () => {
-                    setShowTopMenu(false);
-                    try {
-                      await invoke("launch_interactive_terminal");
-                    } catch (err: any) {
-                      if (confirm(`⚠️ 终端唤起失败：${err}\n\n当前 WSL2 沙箱尚未安装或未就绪。是否立即打开沙箱管理中心进行安装？`)) {
-                        loadSandboxDiag();
-                        setSettingsView("rootfs");
-                      }
-                    }
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left"
-                >
-                  <Terminal className="w-4 h-4 text-[#8E8E93]" />
-                  <span>Shell 终端</span>
+          {/* 会话实时搜索框 */}
+          <div className="p-2.5 border-b border-[#E5E5EA] dark:border-[#1C1C1E]">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs">
+              <Search className="w-3.5 h-3.5 text-[#8E8E93]" />
+              <input
+                type="text"
+                placeholder="搜索会话记录..."
+                value={sessionSearch}
+                onChange={e => setSessionSearch(e.target.value)}
+                className="w-full bg-transparent border-none outline-none text-[#1C1C1E] dark:text-white placeholder-[#8E8E93] text-xs"
+              />
+              {sessionSearch && (
+                <button onClick={() => setSessionSearch("")} className="text-[#8E8E93] hover:text-white">
+                  <X className="w-3 h-3" />
                 </button>
-                <button
-                  onClick={() => {
-                    setShowTopMenu(false);
-                    loadSandboxDiag();
-                    setSettingsView("rootfs");
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left"
-                >
-                  <Terminal className="w-4 h-4 text-[#007AFF]" />
-                  <span>Rootfs 沙箱管理</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowTopMenu(false);
-                    invoke("open_external_url", { url: "https://cn.bing.com" });
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left"
-                >
-                  <Globe className="w-4 h-4 text-[#0A84FF]" />
-                  <span>打开浏览器 (默认)</span>
-                </button>
-                <button
-                  onClick={() => { setShowTopMenu(false); setSettingsView("browser_settings"); }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left border-t border-[#E5E5EA] dark:border-[#2C2C2E]"
-                >
-                  <SettingsIcon className="w-4 h-4 text-[#8E8E93]" />
-                  <span>浏览器设置</span>
-                </button>
-              </div>
-            )}
-
-            {/* 会话列表 */}
-            <div className="flex-1 overflow-y-auto min-h-0 divide-y divide-[#E5E5EA] dark:divide-[#1C1C1E]">
-              <div className="px-4 py-2 text-[13px] font-bold text-[#8E8E93]">今天</div>
-              
-              {sessions.length === 0 ? (
-                <div className="text-center py-10 text-xs text-[#8E8E93]">
-                  暂无历史会话，点击下方新建
-                </div>
-              ) : (
-                sessions.map((s, idx) => {
-                  const colorConfig = AVATAR_COLORS[idx % AVATAR_COLORS.length];
-                  const isSelected = currentSessionId === s.id;
-
-                  return (
-                    <div
-                      key={s.id}
-                      onClick={() => {
-                        invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
-                          setMessages(msgs);
-                          setCurrentSessionId(s.id);
-                        });
-                      }}
-                      className={`flex items-center gap-3 px-4 py-3.5 cursor-pointer transition ${
-                        isSelected 
-                          ? "bg-[#E5E5EA]/60 dark:bg-[#1C1C1E]" 
-                          : "hover:bg-[#F2F2F7] dark:hover:bg-[#141416]"
-                      }`}
-                    >
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text}`}>
-                        <Sparkle className="w-5 h-5" />
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-0.5">
-                          <span className="font-semibold text-sm text-[#1C1C1E] dark:text-[#FFFFFF] truncate">
-                            {s.title}
-                          </span>
-                          <span className="text-[11px] text-[#8E8E93] shrink-0 font-normal">刚才</span>
-                        </div>
-                        <div className="text-xs text-[#8E8E93] truncate">
-                          {s.preview || "暂无消息摘要"}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
               )}
             </div>
+          </div>
 
-            <div className="p-4 border-t border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between">
-              <button
-                onClick={() => {
-                  setMessages([{ role: "assistant", content: "已开启新会话。请随时下达指令！" }]);
-                  setCurrentSessionId(null);
-                  setInput("");
-                }}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#E5E5EA] dark:bg-[#1C1C1E] text-xs font-semibold text-[#1C1C1E] dark:text-[#FFFFFF] hover:opacity-80 transition"
-              >
-                <Plus className="w-4 h-4" /> 新建会话
-              </button>
-              <button
-                onClick={() => setSidebarOpen(false)}
-                className="p-2 rounded-full bg-[#E5E5EA] dark:bg-[#1C1C1E] text-[#8E8E93] hover:text-white transition"
-              >
-                <Search className="w-4 h-4" />
-              </button>
-            </div>
+          {/* 智能时间分组会话列表 */}
+          <div className="flex-1 overflow-y-auto min-h-0 divide-y divide-[#E5E5EA]/40 dark:divide-[#1C1C1E]/40">
+            {sessionGroups.length === 0 ? (
+              <div className="text-center py-10 text-xs text-[#8E8E93] px-4 space-y-1">
+                <div>暂无会话记录</div>
+                <div className="text-[11px] text-[#636366]">点击下方“新建会话”开始探索</div>
+              </div>
+            ) : (
+              sessionGroups.map(group => (
+                <div key={group.label} className="py-2">
+                  <div className="px-4 py-1 text-[11px] font-bold uppercase tracking-wider text-[#8E8E93]">
+                    {group.label}
+                  </div>
+                  <div className="space-y-0.5 mt-1">
+                    {group.items.map((s, idx) => {
+                      const colorConfig = AVATAR_COLORS[idx % AVATAR_COLORS.length];
+                      const isSelected = currentSessionId === s.id;
+
+                      return (
+                        <div
+                          key={s.id}
+                          onClick={() => {
+                            invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
+                              setMessages(msgs);
+                              setCurrentSessionId(s.id);
+                            });
+                          }}
+                          className={`group flex items-center gap-2.5 px-3 py-2.5 mx-1.5 rounded-xl cursor-pointer transition select-none ${
+                            isSelected
+                              ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm"
+                              : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
+                          }`}
+                        >
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text} text-xs font-bold`}>
+                            {s.title ? s.title.slice(0, 1).toUpperCase() : "M"}
+                          </div>
+
+                          <div className="flex-1 min-w-0 pr-1">
+                            <div className="flex items-center justify-between mb-0.5">
+                              <span className="font-semibold text-xs text-[#1C1C1E] dark:text-[#FFFFFF] truncate">
+                                {s.title}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-[#8E8E93] truncate">
+                              {s.preview || "暂无消息摘要"}
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              if (confirm("确定要删除此历史会话吗？")) {
+                                invoke("delete_session", { id: s.id }).then(() => loadSessions());
+                              }
+                            }}
+                            className="opacity-0 group-hover:opacity-100 p-1 text-[#8E8E93] hover:text-[#FF453A] transition"
+                            title="删除会话"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* 底部控制台 */}
+          <div className="p-3 border-t border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between">
+            <button
+              onClick={() => {
+                setMessages([{ role: "assistant", content: "已开启新会话。请随时下达任务！" }]);
+                setCurrentSessionId(null);
+                setInput("");
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0A84FF] text-white text-xs font-semibold hover:opacity-90 shadow-sm transition"
+            >
+              <Plus className="w-3.5 h-3.5" /> 新建会话
+            </button>
+            <button
+              onClick={() => setSettingsView("root")}
+              className="p-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#8E8E93] hover:text-white transition"
+              title="设置"
+            >
+              <SettingsIcon className="w-4 h-4" />
+            </button>
           </div>
         </aside>
       )}
 
       {/* =========================================================================
-          2. 主聊天区
+          2. 主聊天区 (1:1 原版顶栏与菜单 + KaTeX + 停止生成 + 思考强度)
       ========================================================================= */}
       <main className="flex-1 flex flex-col h-full bg-[#F2F2F7] dark:bg-[#000000] relative">
+        {/* 顶栏 */}
         <header className="h-[52px] border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between px-4 shrink-0 bg-white/70 dark:bg-[#000000]/80 backdrop-blur-md z-10">
           <div className="flex items-center gap-2">
             {!sidebarOpen && (
               <button
                 onClick={() => setSidebarOpen(true)}
                 className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#FFFFFF] hover:bg-[#1C1C1E] transition"
+                title="展开侧边栏"
               >
                 <PanelLeft className="w-5 h-5" />
               </button>
             )}
           </div>
 
-          {/* 顶栏中心：模型与思考强度胶囊 */}
+          {/* 顶栏中心：模型选择胶囊 */}
           <div className="relative">
             <button
               onClick={() => setShowModelPicker(!showModelPicker)}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-medium text-[#1C1C1E] dark:text-[#FFFFFF] transition"
+              className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-semibold text-[#1C1C1E] dark:text-[#FFFFFF] transition hover:border-[#0A84FF]/50"
             >
               <span className="truncate max-w-[200px]">{activeModel || "选择模型"}</span>
               <ChevronDown className="w-3.5 h-3.5 text-[#8E8E93]" />
             </button>
 
+            {/* 模型选择弹窗 */}
             {showModelPicker && (
-              <div className="absolute top-10 left-1/2 -translate-x-1/2 w-80 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs">
+              <div className="absolute top-10 left-1/2 -translate-x-1/2 w-80 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none">
                 <div className="pb-2.5 border-b border-[#E5E5EA] dark:border-[#2C2C2E] mb-2 space-y-1.5">
                   <div className="text-[11px] font-semibold text-[#8E8E93] flex items-center gap-1.5">
                     <Sliders className="w-3.5 h-3.5 text-[#0A84FF]" />
@@ -817,7 +982,7 @@ export default function App() {
                         key={lvl}
                         onClick={() => setThinkingLevel(lvl)}
                         className={`flex-1 py-1 rounded-lg uppercase font-semibold transition ${
-                          thinkingLevel === lvl ? "bg-[#0A84FF] text-white" : "text-[#8E8E93] hover:text-white"
+                          thinkingLevel === lvl ? "bg-[#0A84FF] text-white shadow-sm" : "text-[#8E8E93] hover:text-white"
                         }`}
                       >
                         {lvl === "off" ? "关闭" : lvl}
@@ -826,7 +991,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 纯净可用模型池 */}
                 <div className="text-[11px] font-semibold text-[#8E8E93] mb-1">可用模型池</div>
                 <div className="max-h-60 overflow-y-auto space-y-1">
                   {allAvailableModels.length === 0 ? (
@@ -845,7 +1009,7 @@ export default function App() {
                         key={m}
                         onClick={() => { setActiveModel(m); setShowModelPicker(false); }}
                         className={`w-full text-left px-3 py-1.5 rounded-lg text-xs truncate transition flex items-center justify-between ${
-                          activeModel === m ? "bg-[#0A84FF] text-white" : "text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]"
+                          activeModel === m ? "bg-[#0A84FF] text-white font-semibold" : "text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]"
                         }`}
                       >
                         <span className="truncate">{m}</span>
@@ -858,20 +1022,175 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex items-center gap-1">
+          {/* 顶栏右侧：1:1 原版更多选项菜单按钮 */}
+          <div className="flex items-center gap-1.5 relative">
             <button
               onClick={() => {
-                setMessages([{ role: "assistant", content: "已开启新对话。" }]);
+                setMessages([{ role: "assistant", content: "已开启新对话。请随时下达任务！" }]);
                 setCurrentSessionId(null);
                 setInput("");
               }}
-              className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#FFFFFF] transition"
-              title="新建对话"
+              className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#1C1C1E] dark:hover:text-[#FFFFFF] hover:bg-[#F2F2F7] dark:hover:bg-[#1C1C1E] transition"
+              title="新建会话"
             >
               <Plus className="w-5 h-5" />
             </button>
+
+            <button
+              onClick={() => setShowTopMenu(!showTopMenu)}
+              className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#1C1C1E] dark:hover:text-[#FFFFFF] hover:bg-[#F2F2F7] dark:hover:bg-[#1C1C1E] transition"
+              title="更多操作"
+            >
+              <MoreHorizontal className="w-5 h-5" />
+            </button>
+
+            {/* 1:1 对标原版 ChatTrailingMenu 浮动菜单 */}
+            {showTopMenu && (
+              <div className="absolute top-10 right-0 w-56 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none">
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    setMessages([{ role: "assistant", content: "已开启新对话。请随时下达任务！" }]);
+                    setCurrentSessionId(null);
+                    setInput("");
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <Sparkles className="w-4 h-4 text-[#0A84FF]" />
+                  <span>新建对话</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    handleCompactMessages();
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <Layers className="w-4 h-4 text-[#FF9500]" />
+                  <span>压缩上下文 (Compact)</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    setMessages([{ role: "assistant", content: "当前会话已清空。" }]);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#FF453A]/10 text-[#FF453A] transition text-left"
+                >
+                  <Trash2 className="w-4 h-4 text-[#FF453A]" />
+                  <span>清空当前对话</span>
+                </button>
+
+                <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    invoke("launch_interactive_terminal", { cmd: null });
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <Terminal className="w-4 h-4 text-[#34C759]" />
+                  <span>Shell 独立终端</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    setShowBrowserWindow(true);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <Globe className="w-4 h-4 text-[#32ADE6]" />
+                  <span>内置浏览器</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    invoke("open_sandbox_dir");
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <Folder className="w-4 h-4 text-[#AF52DE]" />
+                  <span>浏览沙箱文件</span>
+                </button>
+
+                <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    loadSkills();
+                    setSettingsView("skills");
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <Puzzle className="w-4 h-4 text-[#FF2D55]" />
+                  <span>会话技能 (Skills)</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    loadMounts();
+                    setSettingsView("mounts");
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <HardDrive className="w-4 h-4 text-[#34C759]" />
+                  <span>挂载外部目录</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    loadMemories();
+                    setSettingsView("memory");
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <Lightbulb className="w-4 h-4 text-[#FFCC00]" />
+                  <span>会话记忆</span>
+                </button>
+
+                <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    loadUsage();
+                    setSettingsView("usage");
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <BarChart3 className="w-4 h-4 text-[#0A84FF]" />
+                  <span>Token 用量统计</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowTopMenu(false);
+                    setSettingsView("root");
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition text-left text-black dark:text-white"
+                >
+                  <SettingsIcon className="w-4 h-4 text-[#8E8E93]" />
+                  <span>全部设置</span>
+                </button>
+              </div>
+            )}
           </div>
         </header>
+
+        {/* 容灾 Fallback Toast */}
+        {fallbackToast && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-[#FF9500]/95 text-white px-4 py-2 rounded-2xl shadow-xl text-xs flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-200 backdrop-blur-md">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{fallbackToast}</span>
+          </div>
+        )}
 
         {/* 消息滚动流 */}
         <div className="flex-1 overflow-y-auto px-4 py-6">
@@ -882,24 +1201,18 @@ export default function App() {
               if (msg.role === "tool") {
                 const info = getToolDisplayInfo(msg.content);
                 const IconComponent = info.icon;
-                const isExpanded = !!expandedTools[i];
 
                 return (
-                  <div key={i} className="my-2">
+                  <div key={i} className="my-2 select-none">
                     <div
-                      onClick={() => setExpandedTools(prev => ({ ...prev, [i]: !prev[i] }))}
-                      className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] hover:border-[#38383A] text-xs text-[#8E8E93] cursor-pointer transition select-none shadow-sm"
+                      onClick={() => setSelectedToolDetail(info)}
+                      className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] hover:border-[#0A84FF]/60 text-xs text-[#8E8E93] cursor-pointer transition shadow-sm hover:scale-[1.01]"
+                      title="点击查看执行详情"
                     >
                       <IconComponent className={`w-3.5 h-3.5 ${info.color}`} />
                       <span className="font-mono text-[11px] text-[#1C1C1E] dark:text-[#D1D1D6]">{info.label}</span>
-                      {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                      <span className="text-[10px] text-[#8E8E93] bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded-full">查看</span>
                     </div>
-
-                    {isExpanded && (
-                      <div className="mt-2 p-3.5 rounded-2xl bg-white dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs font-mono relative overflow-x-auto text-[#1C1C1E] dark:text-[#C7C7CC] shadow-inner">
-                        <pre className="whitespace-pre-wrap selection:bg-[#2C2C2E]">{info.detail}</pre>
-                      </div>
-                    )}
                   </div>
                 );
               }
@@ -922,29 +1235,53 @@ export default function App() {
                 );
               }
 
+              // Assistant 消息
+              const isExpandedThink = !!expandedThinking[i];
               return (
-                <div key={i} className="flex flex-col space-y-2 text-[#1C1C1E] dark:text-[#E5E5EA] text-[15px] leading-relaxed select-text">
+                <div key={i} className="flex flex-col space-y-2 text-[#000000] dark:text-[#E4E4E7]">
+                  {/* 1:1 对标原版 ThinkingBlockView */}
                   {msg.thinking && (
-                    <div className="mb-1">
+                    <div className="mb-2 max-w-2xl select-none">
                       <div
                         onClick={() => setExpandedThinking(prev => ({ ...prev, [i]: !prev[i] }))}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs text-[#8E8E93] cursor-pointer transition select-none shadow-sm"
+                        className="inline-flex items-center gap-1.5 text-xs text-[#0A84FF] cursor-pointer hover:opacity-80 py-1 transition font-semibold"
                       >
-                        <Brain className="w-3.5 h-3.5 text-[#0A84FF]" />
-                        <span>已思考 {msg.thinking_duration ? `${msg.thinking_duration.toFixed(1)} 秒` : ""}</span>
-                        {expandedThinking[i] ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                        <Brain className="w-4 h-4 text-[#0A84FF]" />
+                        <span>深度思考</span>
+                        {msg.thinking_duration && (
+                          <span className="text-[11px] text-[#8E8E93] font-normal">({msg.thinking_duration.toFixed(1)}s)</span>
+                        )}
+                        {isExpandedThink ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                       </div>
 
-                      {expandedThinking[i] && (
-                        <div className="mt-2 p-3.5 rounded-2xl bg-white dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs font-mono text-[#8E8E93] leading-relaxed whitespace-pre-wrap">
+                      {isExpandedThink && (
+                        <div className="mt-1 pl-3 py-1 border-l-2 border-[#0A84FF]/40 text-xs text-[#8E8E93] whitespace-pre-wrap leading-relaxed font-sans bg-[#F2F2F7]/50 dark:bg-[#1C1C1E]/30 rounded-r-xl p-2.5">
                           {msg.thinking}
                         </div>
                       )}
                     </div>
                   )}
 
-                  <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {/* Markdown 正文内容 (支持 KaTeX LaTeX 数学公式与可运行代码块) */}
+                  <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5]">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        code({ inline, className, children, ...props }: any) {
+                          const match = /language-(\w+)/.exec(className || "");
+                          const codeText = String(children).replace(/\n$/, "");
+                          if (!inline && match) {
+                            return <CodeBlock language={match[1]} code={codeText} />;
+                          }
+                          return (
+                            <code className="bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#D1D1D6]" {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
+                      }}
+                    >
                       {msg.content}
                     </ReactMarkdown>
                   </div>
@@ -952,52 +1289,63 @@ export default function App() {
               );
             })}
 
-            {loading && streamingThinking && (
-              <div className="flex flex-col space-y-2 text-[#8E8E93]">
-                <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-white dark:bg-[#141416] border border-[#0A84FF]/40 text-xs text-[#0A84FF] animate-pulse shadow-sm">
-                  <Brain className="w-3.5 h-3.5 animate-spin" />
-                  <span>正在深度思考 ({thinkingDuration.toFixed(1)}s)...</span>
-                </div>
-                <div className="p-3.5 rounded-2xl bg-white dark:bg-[#141416] border border-[#2C2C2E] text-xs font-mono text-[#8E8E93] leading-relaxed whitespace-pre-wrap">
-                  {streamingThinking}
-                </div>
+            {/* 流式思考与正文增量展示 */}
+            {loading && (
+              <div className="space-y-2">
+                {streamingThinking && (
+                  <div className="max-w-2xl">
+                    <div className="inline-flex items-center gap-1.5 text-xs text-[#0A84FF] font-semibold py-1">
+                      <Brain className="w-4 h-4 text-[#0A84FF] animate-pulse" />
+                      <span>思考中...</span>
+                    </div>
+                    <div className="mt-1 pl-3 py-1 border-l-2 border-[#0A84FF]/40 text-xs text-[#8E8E93] whitespace-pre-wrap leading-relaxed bg-[#1C1C1E]/30 rounded-r-xl p-2.5">
+                      {streamingThinking}
+                    </div>
+                  </div>
+                )}
+
+                {streamingText && (
+                  <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5]">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        code({ inline, className, children, ...props }: any) {
+                          const match = /language-(\w+)/.exec(className || "");
+                          const codeText = String(children).replace(/\n$/, "");
+                          if (!inline && match) {
+                            return <CodeBlock language={match[1]} code={codeText} />;
+                          }
+                          return (
+                            <code className="bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#D1D1D6]" {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
+                      }}
+                    >
+                      {streamingText}
+                    </ReactMarkdown>
+                  </div>
+                )}
+
+                {activeToolName && (
+                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#141416] border border-[#0A84FF]/40 text-xs text-[#0A84FF] animate-pulse shadow-sm">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>正在调度沙箱: {activeToolName}...</span>
+                  </div>
+                )}
               </div>
             )}
 
-            {loading && streamingText && (
-              <div className="flex flex-col space-y-2 text-[#1C1C1E] dark:text-[#E5E5EA] text-[15px] leading-relaxed select-text">
-                <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {streamingText}
-                  </ReactMarkdown>
-                </div>
-              </div>
-            )}
-
-            {loading && agentStatus === "connecting" && !streamingText && !streamingThinking && (
-              <div className="flex items-center gap-2 text-xs text-[#8E8E93] py-2">
-                <div className="flex gap-1 items-center">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#0A84FF] animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#0A84FF] animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#0A84FF] animate-bounce" style={{ animationDelay: "300ms" }} />
-                </div>
-                <span>Minis 正在分析请求...</span>
-              </div>
-            )}
-
-            {loading && activeToolName && (
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white dark:bg-[#141416] border border-[#2C2C2E] text-[11px] text-[#8E8E93] animate-pulse">
-                <Terminal className="w-3 h-3 text-[#34C759] animate-spin" />
-                <span>{activeToolName}</span>
-              </div>
-            )}
-
-            <div ref={chatEndRef} />
+            <div ref={messagesEndRef} />
           </div>
         </div>
 
-        {/* 悬浮胶囊输入框 */}
-        <div className="p-4 shrink-0">
+        {/* =========================================================================
+            输入栏 (1:1 ChatInputBar：停止按键 + 思考强度快捷切换 + 旋转占位符)
+        ========================================================================= */}
+        <div className="p-4 bg-gradient-to-t from-white via-white/80 to-transparent dark:from-[#000000] dark:via-[#000000]/80 dark:to-transparent shrink-0">
           <div className="max-w-3xl mx-auto bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-[26px] px-4 py-2.5 flex flex-col gap-2 focus-within:border-[#0A84FF] transition shadow-xl">
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pt-1 border-b border-[#E5E5EA] dark:border-[#2C2C2E] pb-2">
@@ -1026,6 +1374,35 @@ export default function App() {
             )}
 
             <div className="flex items-end gap-2">
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                multiple
+                onChange={e => {
+                  const files = e.target.files;
+                  if (!files) return;
+                  Array.from(files).forEach(file => {
+                    const reader = new FileReader();
+                    reader.onload = async () => {
+                      const b64 = reader.result as string;
+                      const isMedia = file.type.startsWith("image/");
+                      setAttachments(prev => [
+                        ...prev,
+                        {
+                          id: Math.random().toString(36).slice(2),
+                          name: file.name,
+                          isMedia,
+                          sizeStr: `${Math.round(file.size / 1024)} KB`,
+                          dataUrl: b64,
+                        }
+                      ]);
+                    };
+                    reader.readAsDataURL(file);
+                  });
+                }}
+              />
+
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -1033,6 +1410,26 @@ export default function App() {
                 title="添加文件或图片"
               >
                 <Plus className="w-5 h-5" />
+              </button>
+
+              {/* 思考强度快捷切换 Pill */}
+              <button
+                type="button"
+                onClick={() => {
+                  const levels = ["off", "low", "medium", "high"];
+                  const next = levels[(levels.indexOf(thinkingLevel) + 1) % levels.length];
+                  setThinkingLevel(next);
+                  localStorage.setItem("openminis_thinking_level", next);
+                }}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition select-none shrink-0 mb-0.5 ${
+                  thinkingLevel !== "off"
+                    ? "bg-[#0A84FF]/10 text-[#0A84FF] border-[#0A84FF]/30 dark:bg-[#0A84FF]/20"
+                    : "bg-transparent text-[#8E8E93] border-transparent hover:border-[#E5E5EA] dark:hover:border-[#2C2C2E]"
+                }`}
+                title="点击快速切换思考模式强度"
+              >
+                <Brain className="w-3.5 h-3.5" />
+                <span>{thinkingLevel === "off" ? "思考: 关" : `思考: ${thinkingLevel.toUpperCase()}`}</span>
               </button>
 
               <textarea
@@ -1051,28 +1448,42 @@ export default function App() {
                     handleSend();
                   }
                 }}
-                placeholder="发送给 Minis..."
+                placeholder={ROTATING_PLACEHOLDERS[placeholderIndex]}
                 className="flex-1 bg-transparent border-none text-[15px] text-black dark:text-white placeholder-[#8E8E93] focus:outline-none resize-none max-h-40 py-1"
               />
 
-              <button
-                onClick={handleSend}
-                disabled={loading || (!input.trim() && attachments.length === 0)}
-                className={`w-7 h-7 rounded-full flex items-center justify-center transition shrink-0 mb-0.5 ${
-                  (input.trim() || attachments.length > 0) && !loading
-                    ? "bg-[#000000] text-white dark:bg-white dark:text-black hover:opacity-90"
-                    : "bg-[#E5E5EA] text-[#8E8E93] dark:bg-[#2C2C2E] dark:text-[#636366] cursor-not-allowed"
-                }`}
-              >
-                <ArrowUp className="w-4 h-4 stroke-[2.5]" />
-              </button>
+              {/* 1:1 对标原版发送 / 停止生成按钮 */}
+              {loading ? (
+                <button
+                  type="button"
+                  onClick={handleStopGeneration}
+                  className="w-7 h-7 rounded-full bg-[#FF453A] hover:bg-[#FF3B30] flex items-center justify-center text-white transition shrink-0 mb-0.5 shadow-md animate-pulse"
+                  title="停止当前生成"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={!input.trim() && attachments.length === 0}
+                  className={`w-7 h-7 rounded-full flex items-center justify-center transition shrink-0 mb-0.5 ${
+                    (input.trim() || attachments.length > 0)
+                      ? "bg-[#000000] text-white dark:bg-white dark:text-black hover:opacity-90 shadow-sm"
+                      : "bg-[#E5E5EA] text-[#8E8E93] dark:bg-[#2C2C2E] dark:text-[#636366] cursor-not-allowed"
+                  }`}
+                  title="发送"
+                >
+                  <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+                </button>
+              )}
             </div>
           </div>
         </div>
       </main>
 
       {/* =========================================================================
-          3. 设置总览中心 (1:1 完美复刻截图 1000143310.jpg)
+          3. 设置总览中心 (1:1 原版 8 大分组全量覆盖)
       ========================================================================= */}
       {settingsView === "root" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
@@ -1087,6 +1498,7 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* 分组 1: LLM 提供商 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">LLM 提供商</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
@@ -1100,7 +1512,7 @@ export default function App() {
                       </div>
                       <div>
                         <div className="text-sm font-semibold text-black dark:text-white">管理提供商</div>
-                        <div className="text-xs text-[#8E8E93]">API key 与 OAuth 登录</div>
+                        <div className="text-xs text-[#8E8E93]">API key 与模型拉取</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -1140,9 +1552,89 @@ export default function App() {
                 </div>
               </div>
 
+              {/* 分组 2: 外观 (1:1 原版补齐) */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">外观</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <div
+                    onClick={() => setSettingsView("appearance")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#FF9500] flex items-center justify-center text-white">
+                        <Palette className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">外观设置</div>
+                        <div className="text-xs text-[#8E8E93]">深浅主题、OLED 纯黑模式与强调色</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 分组 3: AGENT 运行时 (1:1 补齐 Skills 与 Soul) */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">AGENT 运行时</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <div
+                    onClick={() => {
+                      loadSkills();
+                      setSettingsView("skills");
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#FF2D55] flex items-center justify-center text-white">
+                        <Puzzle className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">技能扩展 (Skills)</div>
+                        <div className="text-xs text-[#8E8E93]">管理与安装 MinisSkills 扩展包</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <div
+                    onClick={() => {
+                      loadSoul();
+                      setSettingsView("soul");
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#FF3B30] flex items-center justify-center text-white">
+                        <Heart className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">灵魂设定 (Soul)</div>
+                        <div className="text-xs text-[#8E8E93]">自定义 Agent 人设与指导原则 (SOUL.md)</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <div
+                    onClick={() => {
+                      loadMemories();
+                      setSettingsView("memory");
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#5856D6] flex items-center justify-center text-white">
+                        <Lightbulb className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">记忆</div>
+                        <div className="text-xs text-[#8E8E93]">跨会话保留的持久化知识 (GLOBAL.md)</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
                   <div
                     onClick={() => setSettingsView("mcp")}
                     className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
@@ -1158,28 +1650,10 @@ export default function App() {
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
                   </div>
-
-                  <div
-                    onClick={() => {
-                      invoke<string>("get_today_memory").then(t => setMemoryText(t)).catch(e => setMemoryText(e));
-                      setSettingsView("memory");
-                    }}
-                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-[#5856D6] flex items-center justify-center text-white">
-                        <Lightbulb className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-sm font-semibold text-black dark:text-white">记忆</div>
-                        <div className="text-xs text-[#8E8E93]">跨会话保留的持久化知识</div>
-                      </div>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
-                  </div>
                 </div>
               </div>
 
+              {/* 分组 4: 存储 (1:1 补齐挂载外部目录) */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">存储</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
@@ -1195,8 +1669,8 @@ export default function App() {
                         <Terminal className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="text-sm font-semibold text-black dark:text-white">存储</div>
-                        <div className="text-xs text-[#8E8E93]">Alpine Linux rootfs 并浏览文件</div>
+                        <div className="text-sm font-semibold text-black dark:text-white">存储与 Rootfs</div>
+                        <div className="text-xs text-[#8E8E93]">Alpine Linux 沙箱与运行状态诊断</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -1217,10 +1691,29 @@ export default function App() {
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
                   </div>
+
+                  <div
+                    onClick={() => {
+                      loadMounts();
+                      setSettingsView("mounts");
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#32ADE6] flex items-center justify-center text-white">
+                        <HardDrive className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">挂载外部目录</div>
+                        <div className="text-xs text-[#8E8E93]">将 Windows 本地磁盘映射进沙箱 /var/minis/mounts/</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
                 </div>
               </div>
 
-              {/* 关于分组 (1:1 完美复刻截图 1000143310.jpg) */}
+              {/* 分组 5: 关于 */}
               <div>
                 <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">关于</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
@@ -1276,8 +1769,312 @@ export default function App() {
       )}
 
       {/* =========================================================================
-          4. AI 服务商页面 (纯净空状态 + 自行添加)
+          全新补齐视图 1: 外观设置 (Appearance)
       ========================================================================= */}
+      {settingsView === "appearance" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-lg rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold text-black dark:text-white">外观设置</h2>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-5 overflow-y-auto text-xs">
+              <div className="space-y-2">
+                <label className="text-[11px] font-semibold text-[#8E8E93] uppercase">主题色彩模式</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {["dark", "light", "system"].map(t => (
+                    <button
+                      key={t}
+                      onClick={() => {
+                        setThemeMode(t as any);
+                        localStorage.setItem("openminis_theme_mode", t);
+                      }}
+                      className={`p-3 rounded-2xl border text-center font-semibold capitalize transition ${
+                        themeMode === t
+                          ? "border-[#0A84FF] bg-[#0A84FF]/10 text-[#0A84FF]"
+                          : "border-[#E5E5EA] dark:border-[#2C2C2E] hover:bg-white dark:hover:bg-[#2C2C2E] text-black dark:text-white"
+                      }`}
+                    >
+                      {t === "dark" ? "深色 (Dark)" : t === "light" ? "浅色 (Light)" : "跟随系统"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-4 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                <div>
+                  <div className="font-semibold text-sm text-black dark:text-white">OLED 纯黑模式</div>
+                  <div className="text-xs text-[#8E8E93]">深色背景完全使用 #000000 纯黑，更沉浸省电</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={oledMode}
+                  onChange={e => {
+                    setOledMode(e.target.checked);
+                    localStorage.setItem("openminis_oled_mode", String(e.target.checked));
+                  }}
+                  className="w-5 h-5 accent-[#0A84FF]"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[11px] font-semibold text-[#8E8E93] uppercase">系统强调色</label>
+                <div className="flex gap-3">
+                  {["#0A84FF", "#34C759", "#AF52DE", "#FF9500"].map(color => (
+                    <button
+                      key={color}
+                      onClick={() => {
+                        setAccentColor(color);
+                        localStorage.setItem("openminis_accent_color", color);
+                      }}
+                      className={`w-8 h-8 rounded-full flex items-center justify-center transition ${
+                        accentColor === color ? "ring-2 ring-white ring-offset-2 ring-offset-black" : "opacity-80 hover:opacity-100"
+                      }`}
+                      style={{ backgroundColor: color }}
+                    >
+                      {accentColor === color && <Check className="w-4 h-4 text-white" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          全新补齐视图 2: 技能扩展 (Skills)
+      ========================================================================= */}
+      {settingsView === "skills" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold text-black dark:text-white">技能扩展 (Skills)</h2>
+              </div>
+              <button
+                onClick={() => invoke("open_external_url", { url: "https://github.com/OpenMinis/MinisSkills" })}
+                className="text-xs text-[#0A84FF] flex items-center gap-1 hover:underline"
+              >
+                <span>浏览 MinisSkills 官方库</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div className="text-xs text-[#8E8E93] px-1">
+                技能是存放于本地或沙箱中的扩展包（包含 SKILL.md）。当对话意图命中技能描述时，Agent 将自动调用相关脚本。
+              </div>
+
+              {skills.length === 0 ? (
+                <div className="text-center py-12 text-xs text-[#8E8E93]">暂无已安装技能</div>
+              ) : (
+                skills.map(skill => (
+                  <div
+                    key={skill.id}
+                    className="p-3.5 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-3 pr-2">
+                      <div className="w-9 h-9 rounded-xl bg-[#FF2D55]/10 text-[#FF2D55] flex items-center justify-center shrink-0">
+                        <Puzzle className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">{skill.name}</div>
+                        <div className="text-xs text-[#8E8E93] line-clamp-1">{skill.description}</div>
+                      </div>
+                    </div>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#34C759]/10 text-[#34C759] font-semibold shrink-0">
+                      已就绪
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          全新补齐视图 3: 灵魂设定 (Soul)
+      ========================================================================= */}
+      {settingsView === "soul" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold text-black dark:text-white">灵魂设定 (Soul)</h2>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-[#8E8E93] uppercase">Agent 助手称谓</label>
+                <input
+                  type="text"
+                  value={soulConfig.name}
+                  onChange={e => setSoulConfig(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-[#242426] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white outline-none focus:border-[#0A84FF]"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-[#8E8E93] uppercase">自定义系统人设 (SOUL.md)</label>
+                  <button
+                    onClick={() => {
+                      setSoulConfig({
+                        name: "Minis",
+                        instruction: "You are Minis, a private AI agent on Windows. Be direct, concise, and take action with tools.",
+                        active: true,
+                      });
+                    }}
+                    className="text-[11px] text-[#0A84FF] hover:underline"
+                  >
+                    恢复默认
+                  </button>
+                </div>
+                <textarea
+                  rows={8}
+                  value={soulConfig.instruction}
+                  onChange={e => setSoulConfig(prev => ({ ...prev, instruction: e.target.value }))}
+                  className="w-full p-3.5 rounded-2xl bg-white dark:bg-[#242426] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white outline-none focus:border-[#0A84FF] font-mono leading-relaxed resize-none"
+                  placeholder="在此写入你的个性化指导原则与性格语气设定..."
+                />
+              </div>
+
+              <button
+                onClick={async () => {
+                  try {
+                    await invoke("save_soul_config", { config: soulConfig });
+                    alert("灵魂设定保存成功！每轮对话将自动注入新设定。");
+                    setSettingsView("root");
+                  } catch (e) {
+                    alert(`保存失败: ${e}`);
+                  }
+                }}
+                className="w-full py-3 rounded-xl bg-[#0A84FF] text-white font-semibold shadow-md hover:opacity-90 transition text-sm"
+              >
+                保存设定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          全新补齐视图 4: 外部目录挂载 (Mounted Folders)
+      ========================================================================= */}
+      {settingsView === "mounts" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold text-black dark:text-white">挂载外部目录</h2>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+              <div className="p-3.5 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-2.5">
+                <div className="font-semibold text-sm text-black dark:text-white">添加新挂载 (Windows → 沙箱)</div>
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    placeholder="Windows 绝对路径 (例如: D:\Projects 或 C:\Users\...\Notes)"
+                    value={newMountHost}
+                    onChange={e => setNewMountHost(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="沙箱挂载别名 (例如: Projects，将在沙箱 /var/minis/mounts/Projects 可见)"
+                    value={newMountName}
+                    onChange={e => setNewMountName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] text-black dark:text-white outline-none"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!newMountHost.trim() || !newMountName.trim()) {
+                        alert("请完整填写路径与别名");
+                        return;
+                      }
+                      try {
+                        await invoke("add_mounted_folder", { hostPath: newMountHost.trim(), mountName: newMountName.trim() });
+                        setNewMountHost("");
+                        setNewMountName("");
+                        loadMounts();
+                        alert("外部目录挂载成功！Agent 可在沙箱 /var/minis/mounts/ 下直接读写文件。");
+                      } catch (err) {
+                        alert(`挂载失败: ${err}`);
+                      }
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-[#34C759] text-white font-semibold hover:opacity-90 transition"
+                  >
+                    立即挂载至沙箱
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold text-[#8E8E93] uppercase">当前已挂载目录</div>
+                {mountedFolders.length === 0 ? (
+                  <div className="text-center py-8 text-xs text-[#8E8E93]">暂无外部挂载目录</div>
+                ) : (
+                  mountedFolders.map(m => (
+                    <div
+                      key={m.id}
+                      className="p-3 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between"
+                    >
+                      <div>
+                        <div className="font-semibold text-xs text-black dark:text-white">{m.name}</div>
+                        <div className="text-[11px] text-[#8E8E93] line-clamp-1">宿主: {m.host_path}</div>
+                        <div className="text-[11px] text-[#0A84FF]">沙箱: {m.sandbox_mount_path}</div>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          if (confirm(`确定卸载挂载点 ${m.name} 吗？`)) {
+                            await invoke("remove_mounted_folder", { mountName: m.name });
+                            loadMounts();
+                          }
+                        }}
+                        className="text-xs text-[#FF453A] hover:underline px-2 py-1"
+                      >
+                        卸载
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          工具调用详情全屏抽屉模态框 (ToolLiveModal)
+      ========================================================================= */}
+      {selectedToolDetail && (
+        <ToolLiveModal
+          toolInfo={selectedToolDetail}
+          onClose={() => setSelectedToolDetail(null)}
+        />
+      )}
+
+
+      {/* 现有子模态框 */}
       {settingsView === "providers" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">

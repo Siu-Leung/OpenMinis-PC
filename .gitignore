@@ -146,3 +146,8 @@ deps/lame-3.100/**/.deps/
 # not a vendored binary — same treatment as the iOS Rclone.xcframework it is
 # built alongside (deps/build_rclone_ios.sh).
 src/android/app/libs/rclone.aar
+
+# Windows Tauri & Node.js
+src/windows/node_modules/
+src/windows/dist/
+src/windows/src-tauri/target/

@@ -1,8 +1,9 @@
-//! OpenMinis Windows 工具调用分发器 (加固审计版)
-//! 备注：私人用极度不稳定 Aicoding 改
+//! OpenMinis Windows 工具调用分发器 (加固审计与 Native Offload 版)
+//! 备注：Windows 测试版 (Experimental)
 
 use crate::browser::{BrowserActionParams, BrowserEngine};
 use crate::memory::{MemoryCategory, MemoryStore};
+use crate::offloads::WindowsOffload;
 use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -43,7 +44,6 @@ impl ToolDispatcher {
                 let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 match self.sandbox.read_sandbox_file(path).await {
                     Ok(content) => {
-                        // 防止大文件撑爆上下文
                         let truncated = if content.chars().count() > 15000 {
                             let head: String = content.chars().take(15000).collect();
                             format!("{}\n\n... [文件内容过长已截断，仅显示前 15000 字符]", head)
@@ -152,14 +152,55 @@ impl ToolDispatcher {
                 }
             }
 
+            // --- Windows Native Offloads ---
+            "clipboard_read" => {
+                let mut cmd = std::process::Command::new("powershell.exe");
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000);
+                }
+                cmd.args(["-NoProfile", "-Command", "Get-Clipboard"]);
+                match cmd.output() {
+                    Ok(out) => json!({ "clipboard_text": String::from_utf8_lossy(&out.stdout).trim() }),
+                    Err(e) => json!({ "error": format!("读取剪贴板失败: {}", e) }),
+                }
+            }
+
+            "clipboard_write" => {
+                let text = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let mut cmd = std::process::Command::new("powershell.exe");
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000);
+                }
+                let clean = text.replace('\'', "''");
+                cmd.args(["-NoProfile", "-Command", &format!("Set-Clipboard -Value '{}'", clean)]);
+                match cmd.output() {
+                    Ok(_) => json!({ "success": true, "message": "已写入 Windows 剪贴板" }),
+                    Err(e) => json!({ "error": format!("写入剪贴板失败: {}", e) }),
+                }
+            }
+
+            "system_notification" => {
+                let title = arguments.get("title").and_then(|v| v.as_str()).unwrap_or("OpenMinis 通知");
+                let message = arguments.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                WindowsOffload::send_notification(title, message);
+                json!({ "success": true, "message": "已触发 Windows 原生通知" })
+            }
+
+            "system_info" => {
+                let summary = WindowsOffload::get_system_summary();
+                json!({ "success": true, "system_info": summary })
+            }
+
             "win_open" => {
                 let target = arguments.get("url").or(arguments.get("path")).and_then(|v| v.as_str()).unwrap_or("");
-                // 安全审计加固：禁止任何包含管道、重定向、子命令执行的危险字符
                 if target.contains('&') || target.contains('|') || target.contains(';') || target.contains('`') || target.contains('$') || target.contains('\n') {
                     return json!({ "error": "安全拦截: 目标参数包含非法命令控制字符" });
                 }
 
-                // 仅放行安全的 http / https 链接，使用 rundll32 直接交由系统外壳打开，杜绝 cmd /c 命令注入
                 if target.starts_with("http://") || target.starts_with("https://") {
                     #[cfg(target_os = "windows")]
                     {

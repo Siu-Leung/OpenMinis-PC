@@ -1,11 +1,15 @@
-//! OpenMinis Windows Agent Loop 核心逻辑 (模型组 Fallback 自动回退 + 真实 Token 用量统计版)
-//! 备注：私人用极度不稳定 Aicoding 改
+//! OpenMinis Windows Agent Loop 核心逻辑 (模型组 Fallback 自动回退 + 记忆/技能自动注入 + 中断停止版)
+//! 备注：Windows 测试版 (Experimental)
 
+use crate::mounts::MountManager;
+use crate::skills::SkillsManager;
+use crate::soul::SoulManager;
 use crate::tools::ToolDispatcher;
 use crate::usage::UsageTracker;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
@@ -24,22 +28,21 @@ Linux Sandbox Rules & Directories:
   /var/minis/attachments/ — Media files (images, audio, downloads).
   /var/minis/offloads/    — Auto-saved large tool outputs.
   /var/minis/shared/      — Persistent storage.
+  /var/minis/mounts/      — Mounted Windows host directories (if any).
 - Tools available:
   - shell_execute: Execute non-interactive Linux shell commands (python3, curl, apk add, sshpass, etc.).
   - open_terminal: Open an interactive terminal window for tasks requiring user stdin (interactive SSH password login, vim, htop). Pass optional command parameter.
   - file_read: Read file contents from sandbox.
   - file_write: Write or overwrite file contents.
   - file_edit: Exact string replacement for targeted edits.
-  - browser_use: Navigate and extract real web content (get_text / navigate / screenshot) rendered via Edge Headless engine.
-- SSH & Remote operations:
-  - For non-interactive scripts: use `sshpass -p <password> ssh -o StrictHostKeyChecking=no ...` or key-based auth `ssh -i <key> ...`.
-  - For interactive logins where user needs to type passwords or view TUI: call `open_terminal` with the ssh command to launch Windows Terminal.
+  - browser_use: Navigate and extract real web content (get_text / navigate / screenshot) rendered via Edge engine.
+  - clipboard_read & clipboard_write: Read or write to the host Windows clipboard.
+  - system_notification: Send a native Windows desktop notification toast.
+  - system_info: Retrieve host CPU, OS, and memory summary.
 
-Memory & Learning (borrowed from Hermes Agent):
+Memory & Learning (1:1 aligned with OpenMinis & Hermes Agent):
 - memory_write: Persist important facts, user preferences, project context, or learned skills for cross-session recall.
-- memory_search: Search past memories by keyword to recall previous context before starting tasks.
-- Always check memory_search before starting a new task to leverage past knowledge.
-- Proactively save memories when you discover user preferences or important patterns.
+- memory_search: Search past memories by keyword to recall previous context.
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,19 +78,31 @@ pub struct AgentConfig {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamEvent {
-    pub event_type: String, // "status" | "thinking" | "token" | "tool_start" | "tool_end" | "fallback" | "error"
+    pub event_type: String, // "status" | "thinking" | "token" | "tool_start" | "tool_end" | "fallback" | "error" | "stopped"
     pub content: String,
 }
 
 pub struct AgentEngine {
     pub dispatcher: Arc<ToolDispatcher>,
     pub usage_tracker: Arc<UsageTracker>,
+    pub memory: Arc<crate::memory::MemoryStore>,
+    pub soul: Arc<SoulManager>,
+    pub skills: Arc<SkillsManager>,
+    pub mounts: Arc<MountManager>,
     pub http_client: reqwest::Client,
     pub execution_lock: Arc<tokio::sync::Mutex<()>>,
+    pub abort_flag: Arc<AtomicBool>,
 }
 
 impl AgentEngine {
-    pub fn new(dispatcher: Arc<ToolDispatcher>, usage_tracker: Arc<UsageTracker>) -> Self {
+    pub fn new(
+        dispatcher: Arc<ToolDispatcher>,
+        usage_tracker: Arc<UsageTracker>,
+        memory: Arc<crate::memory::MemoryStore>,
+        soul: Arc<SoulManager>,
+        skills: Arc<SkillsManager>,
+        mounts: Arc<MountManager>,
+    ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
@@ -95,12 +110,56 @@ impl AgentEngine {
         Self {
             dispatcher,
             usage_tracker,
+            memory,
+            soul,
+            skills,
+            mounts,
             http_client,
             execution_lock: Arc::new(tokio::sync::Mutex::new(())),
+            abort_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// 执行一轮 Agent 对话与工具调度 (带模型组 Fallback 自动容灾回退)
+    /// 中断当前正在生成的 Agent 会话
+    pub fn abort(&self) {
+        self.abort_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// 动态组装包含人设 (SOUL.md)、全局记忆 (GLOBAL.md)、近 3 天日志与技能清单的完整 System Prompt
+    fn assemble_system_prompt(&self, custom_sp: Option<&str>) -> String {
+        let mut prompt = String::new();
+
+        let soul_cfg = self.soul.get_soul();
+        if soul_cfg.active && !soul_cfg.instruction.trim().is_empty() {
+            prompt.push_str(&soul_cfg.instruction);
+            prompt.push_str("\n\n");
+        }
+
+        let base = custom_sp.unwrap_or(SYSTEM_PROMPT);
+        prompt.push_str(base);
+
+        let memory_frag = self.memory.get_recent_memories_fragment();
+        if !memory_frag.is_empty() {
+            prompt.push_str(&memory_frag);
+        }
+
+        let skills_frag = self.skills.get_skills_summary();
+        if !skills_frag.is_empty() {
+            prompt.push_str(&skills_frag);
+        }
+
+        let mounts = self.mounts.list_mounts();
+        if !mounts.is_empty() {
+            prompt.push_str("\n\nMounted Windows Host Folders (accessible in sandbox at /var/minis/mounts/):\n");
+            for m in mounts {
+                prompt.push_str(&format!("- {} -> {} (host: {})\n", m.name, m.sandbox_mount_path, m.host_path));
+            }
+        }
+
+        prompt
+    }
+
+    /// 执行一轮 Agent 对话与工具调度 (带模型组 Fallback 自动容灾回退 + 快速中断机制)
     pub async fn run_turn_stream(
         &self,
         app: &AppHandle,
@@ -108,15 +167,16 @@ impl AgentEngine {
         mut history: Vec<ChatMessage>,
     ) -> Result<Vec<ChatMessage>, String> {
         let _guard = self.execution_lock.lock().await;
+        self.abort_flag.store(false, Ordering::SeqCst);
 
         let tools_schema = self.get_tools_schema();
 
-        // 1. 注入或更新 System Prompt
+        // 1. 动态注入组装 System Prompt (记忆 + 技能 + 人设)
+        let full_sp = self.assemble_system_prompt(config.system_prompt.as_deref());
         if history.is_empty() || history[0].role != "system" {
-            let custom_sp = config.system_prompt.as_deref().unwrap_or(SYSTEM_PROMPT);
             history.insert(0, ChatMessage {
                 role: "system".to_string(),
-                content: custom_sp.to_string(),
+                content: full_sp,
                 thinking: None,
                 thinking_duration: None,
                 tool_calls: None,
@@ -124,11 +184,10 @@ impl AgentEngine {
                 images: None,
                 files: None,
             });
-        } else if let Some(custom_sp) = &config.system_prompt {
-            history[0].content = custom_sp.clone();
+        } else {
+            history[0].content = full_sp;
         }
 
-        // 准备回退模型候选队列 (当前模型在首位，后接 fallback 列表)
         let mut candidate_models = vec![config.model.clone()];
         if let Some(ref fallbacks) = config.fallback_models {
             for m in fallbacks {
@@ -144,6 +203,14 @@ impl AgentEngine {
         let mut total_tool_calls = 0usize;
 
         for _ in 0..10 {
+            if self.abort_flag.load(Ordering::SeqCst) {
+                let _ = app.emit("agent-stream", StreamEvent {
+                    event_type: "stopped".to_string(),
+                    content: "用户已手动停止生成。".to_string(),
+                });
+                break;
+            }
+
             let mut stream_success = false;
             let mut last_error_msg = String::new();
 
@@ -152,10 +219,12 @@ impl AgentEngine {
             let mut tool_calls_map: std::collections::HashMap<usize, (String, String, String)> =
                 std::collections::HashMap::new();
             let mut turn_start_time = Instant::now();
-            let mut successful_model = config.model.clone();
 
-            // 核心功能：模型组自动回退重试机制 (Fallback Loop)
             for (idx, try_model) in candidate_models.iter().enumerate() {
+                if self.abort_flag.load(Ordering::SeqCst) {
+                    break;
+                }
+
                 if idx > 0 {
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "fallback".to_string(),
@@ -216,15 +285,14 @@ impl AgentEngine {
                     Ok(err_resp) => {
                         let err_text = err_resp.text().await.unwrap_or_default();
                         last_error_msg = format!("HTTP 错误: {}", err_text);
-                        continue; // 尝试下一个回退模型
+                        continue;
                     }
                     Err(e) => {
                         last_error_msg = format!("网络连接异常: {}", e);
-                        continue; // 尝试下一个回退模型
+                        continue;
                     }
                 };
 
-                // 流式读取解析
                 let mut stream = resp.bytes_stream();
                 assistant_content.clear();
                 assistant_thinking.clear();
@@ -233,10 +301,17 @@ impl AgentEngine {
                 let mut is_in_thinking_phase = false;
                 let mut buffer = String::new();
                 let mut done = false;
-
                 let mut read_failed = false;
 
                 while !done {
+                    if self.abort_flag.load(Ordering::SeqCst) {
+                        let _ = app.emit("agent-stream", StreamEvent {
+                            event_type: "stopped".to_string(),
+                            content: "已中止当前生成".to_string(),
+                        });
+                        break;
+                    }
+
                     let item = match stream.next().await {
                         Some(Ok(bytes)) => bytes,
                         Some(Err(e)) => {
@@ -263,7 +338,6 @@ impl AgentEngine {
 
                         if let Some(json_str) = line.strip_prefix("data: ") {
                             if let Ok(val) = serde_json::from_str::<Value>(json_str) {
-                                // 捕获真实 Token 统计并持久化
                                 if let Some(usage) = val.get("usage") {
                                     let p_tok = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                                     let c_tok = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -287,7 +361,6 @@ impl AgentEngine {
 
                                 if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
                                     if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
-                                        // 思考链增量
                                         if let Some(reasoning_chunk) = delta
                                             .get("reasoning_content")
                                             .or_else(|| delta.get("reasoning"))
@@ -307,7 +380,6 @@ impl AgentEngine {
                                             });
                                         }
 
-                                        // 正文内容增量
                                         if let Some(chunk_text) = delta.get("content").and_then(|v| v.as_str()) {
                                             if is_in_thinking_phase {
                                                 is_in_thinking_phase = false;
@@ -323,7 +395,6 @@ impl AgentEngine {
                                             });
                                         }
 
-                                        // 工具调用增量
                                         if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                                             for call in calls {
                                                 let index = call.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -355,9 +426,22 @@ impl AgentEngine {
 
                 if !read_failed {
                     stream_success = true;
-                    successful_model = try_model.clone();
                     break;
                 }
+            }
+
+            if self.abort_flag.load(Ordering::SeqCst) {
+                history.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: assistant_content,
+                    thinking: if assistant_thinking.is_empty() { None } else { Some(assistant_thinking) },
+                    thinking_duration: Some(turn_start_time.elapsed().as_secs_f64()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    images: None,
+                    files: None,
+                });
+                return Ok(history);
             }
 
             if !stream_success {
@@ -369,7 +453,6 @@ impl AgentEngine {
                 return Err(err_msg);
             }
 
-            // 处理 <think> 标签格式
             if assistant_thinking.is_empty() && assistant_content.contains("<think>") {
                 if let Some(start) = assistant_content.find("<think>") {
                     if let Some(end) = assistant_content.find("</think>") {
@@ -427,6 +510,10 @@ impl AgentEngine {
             // 执行工具调用
             if let Some(calls) = tool_calls_val.and_then(|v| v.as_array().cloned()) {
                 for call in calls {
+                    if self.abort_flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+
                     let call_id = call["id"].as_str().unwrap_or("").to_string();
                     let fn_name = call["function"]["name"].as_str().unwrap_or("");
                     let fn_args_str = call["function"]["arguments"].as_str().unwrap_or("{}");
@@ -448,16 +535,6 @@ impl AgentEngine {
                             images: None,
                             files: None,
                         });
-                        history.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content: "⚠️ 已达工具调用安全上限（20次），已自动终止后续工具调度。".to_string(),
-                            thinking: None,
-                            thinking_duration: None,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            images: None,
-                            files: None,
-                        });
                         return Ok(history);
                     }
 
@@ -470,7 +547,7 @@ impl AgentEngine {
                     }
 
                     if repeat_call_count >= 3 {
-                        let loop_err = "警告: 检测到同名参数工具发生死循环调用 (Tool Loop Detected)。已强制终止本轮重试，请更换指令思路。".to_string();
+                        let loop_err = "警告: 检测到同名参数工具死循环 (Tool Loop Detected)。已强制终止。".to_string();
                         let _ = app.emit("agent-stream", StreamEvent {
                             event_type: "error".to_string(),
                             content: loop_err.clone(),
@@ -482,16 +559,6 @@ impl AgentEngine {
                             thinking_duration: None,
                             tool_calls: None,
                             tool_call_id: Some(call_id),
-                            images: None,
-                            files: None,
-                        });
-                        history.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content: "⚠️ 检测到工具调用死循环，已启动安全熔断。请调整指令或参数重试。".to_string(),
-                            thinking: None,
-                            thinking_duration: None,
-                            tool_calls: None,
-                            tool_call_id: None,
                             images: None,
                             files: None,
                         });
@@ -646,6 +713,57 @@ impl AgentEngine {
                             "query": { "type": "string" }
                         },
                         "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "clipboard_read",
+                    "description": "读取宿主 Windows 系统剪贴板内容",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "clipboard_write",
+                    "description": "将指定文本写入宿主 Windows 系统剪贴板",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string", "description": "待写入文本" }
+                        },
+                        "required": ["text"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "system_notification",
+                    "description": "向宿主 Windows 桌面弹出一条原生系统消息通知",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string", "description": "通知标题" },
+                            "message": { "type": "string", "description": "通知消息内容" }
+                        },
+                        "required": ["title", "message"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "system_info",
+                    "description": "查询宿主 Windows 系统硬件与运行环境概要",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
                     }
                 }
             }

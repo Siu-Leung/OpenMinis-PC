@@ -1,17 +1,21 @@
 // Prevents console window on Windows
 #![windows_subsystem = "windows"]
 
-//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动 + 一键沙箱初始化 + 自动拉取模型 + MCP + 模型组 Fallback + 用量统计)
-//! 备注：私人用极度不稳定 Aicoding 改
+//! OpenMinis Windows Desktop Entry (完全审计加固版 + 调度驱动 + 一键沙箱初始化 + 自动拉取模型 + MCP + 模型组 Fallback + 用量统计 + 灵魂设定 + 技能系统 + 外部挂载)
+//! 备注：Windows 测试版 (Experimental)
 
 mod agent;
 mod browser;
 mod mcp;
 mod memory;
 mod model_groups;
+mod mounts;
+mod offloads;
 mod sandbox;
 mod scheduler;
 mod session;
+mod skills;
+mod soul;
 mod tools;
 mod usage;
 
@@ -20,10 +24,14 @@ use browser::BrowserEngine;
 use mcp::{McpManager, McpServer};
 use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use model_groups::{FullModelGroupsState, ModelGroupManager};
+use mounts::{MountManager, MountedFolderItem};
+use offloads::WindowsOffload;
 use sandbox::SandboxManager;
 use scheduler::{CronScheduler, ScheduledTask};
 use serde::{Deserialize, Serialize};
 use session::SessionStore;
+use skills::{SkillItem, SkillsManager};
+use soul::{SoulConfig, SoulManager};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tools::ToolDispatcher;
@@ -39,6 +47,9 @@ struct AppState {
     mcp: Arc<McpManager>,
     usage: Arc<UsageTracker>,
     model_groups: Arc<ModelGroupManager>,
+    soul: Arc<SoulManager>,
+    skills: Arc<SkillsManager>,
+    mounts: Arc<MountManager>,
 }
 
 // === 沙箱与 Agent 命令 ===
@@ -72,7 +83,7 @@ async fn import_local_files_by_path(
 
     for path_str in paths {
         let p = std::path::Path::new(&path_str);
-        if !p.exists() || !p.is_file() {
+        if !p.exists() {
             continue;
         }
 
@@ -181,6 +192,12 @@ async fn run_agent_turn(
 }
 
 #[tauri::command]
+fn abort_agent_turn(state: State<'_, AppState>) -> Result<(), String> {
+    state.agent.abort();
+    Ok(())
+}
+
+#[tauri::command]
 async fn launch_interactive_terminal(state: State<'_, AppState>, cmd: Option<String>) -> Result<(), String> {
     state.sandbox.launch_interactive_terminal(cmd)
 }
@@ -218,143 +235,150 @@ async fn open_sandbox_rootfs_dir(state: State<'_, AppState>) -> Result<(), Strin
 
 #[tauri::command]
 fn restart_app(app: AppHandle) {
-    app.restart();
+    let exe = std::env::current_exe().unwrap_or_default();
+    let mut cmd = std::process::Command::new(exe);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let _ = cmd.spawn();
+    app.exit(0);
 }
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("仅支持以 http 或 https 开头的安全外部链接".to_string());
+    }
+
     #[cfg(target_os = "windows")]
     {
-        let safe_url = url.trim();
-        if safe_url.starts_with("http://") || safe_url.starts_with("https://") {
-            let _ = std::process::Command::new("rundll32.exe")
-                .args(["url.dll,FileProtocolHandler", safe_url])
-                .spawn();
-            return Ok(());
-        }
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("rundll32.exe");
+        cmd.args(["url.dll,FileProtocolHandler", &url]);
+        cmd.creation_flags(0x08000000);
+        let _ = cmd.spawn();
     }
-    Err("仅支持以 http:// 或 https:// 开头的网络链接".to_string())
+    Ok(())
 }
 
 #[tauri::command]
 fn launch_installer_terminal() -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        let ps_code = r#"
-$ErrorActionPreference = 'Continue'
+    let script_content = r#"
+$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Write-Host "=====================================================" -ForegroundColor Cyan
-Write-Host "   OpenMinis WSL2 Alpine 沙箱可视化安装配置向导      " -ForegroundColor Cyan
-Write-Host "=====================================================" -ForegroundColor Cyan
 
-$base = Join-Path $env:LOCALAPPDATA 'OpenMinis'
-$sb = Join-Path $base 'sandbox'
-$dl = Join-Path $base 'downloads'
-New-Item -ItemType Directory -Force -Path $sb, $dl | Out-Null
-$tar = Join-Path $dl 'alpine-minirootfs-3.20.2-x86_64.tar.gz'
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "    OpenMinis Windows WSL2 沙箱可视化初始化安装向导        " -ForegroundColor Yellow
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host ""
 
-if (-not (Test-Path $tar)) {
-    Write-Host "`n[1/4] 正在从清华大学镜像站下载 Alpine Linux 镜像 (约 3.8MB)..." -ForegroundColor Green
-    $url = "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz"
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $tar
-    } catch {
-        Write-Host "清华源下载失败，正在切换阿里云镜像源..." -ForegroundColor Yellow
-        Invoke-WebRequest -Uri "https://mirrors.aliyun.com/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.2-x86_64.tar.gz" -OutFile $tar
-    }
+$distroName = "OpenMinisSandbox"
+$localAppData = [System.Environment]::GetFolderPath('LocalApplicationData')
+$sandboxDir = Join-Path $localAppData "OpenMinis\sandbox"
+$rootfsTar = Join-Path $sandboxDir "alpine-minirootfs.tar.gz"
+
+if (!(Test-Path $sandboxDir)) {
+    New-Item -ItemType Directory -Force -Path $sandboxDir | Out-Null
 }
 
-Write-Host "`n[2/4] 正在注销旧实例并向 WSL2 导入全新 OpenMinisSandbox..." -ForegroundColor Green
-wsl --unregister OpenMinisSandbox 2>$null
-wsl --import OpenMinisSandbox $sb $tar --version 2
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "WSL2 导入失败，降级尝试默认导入..." -ForegroundColor Yellow
-    wsl --import OpenMinisSandbox $sb $tar
-}
+$mirrorUrl = "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz"
 
-Write-Host "`n[3/4] 正在写入零泄露宿主安全隔离规则 (/etc/wsl.conf)..." -ForegroundColor Green
-$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("[automount]`nenabled = false`nmountFsTab = false`n`n[interop]`nenabled = false`nappendWindowsPath = false`n`n[network]`ngenerateResolvConf = true`n"))
-wsl -d OpenMinisSandbox -u root --exec /bin/sh -c "echo '$b64' | base64 -d > /etc/wsl.conf"
+Write-Host "[1/4] 正在从清华源高速下载 Alpine Linux 镜像..." -ForegroundColor Green
+Write-Host "下载直链: $mirrorUrl" -ForegroundColor Gray
+Write-Host "保存路径: $rootfsTar" -ForegroundColor Gray
+Write-Host ""
 
-Write-Host "`n[4/4] 正在配置工作区与 Python 核心工具箱 (约 15 秒)..." -ForegroundColor Green
-wsl -d OpenMinisSandbox -u root --exec /bin/sh -c "mkdir -p /var/minis/workspace /var/minis/attachments /var/minis/shared /var/minis/offloads /var/minis/memory; chmod 000 /mnt 2>/dev/null; printf 'nameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 8.8.8.8\n' > /etc/resolv.conf; sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories; apk update && apk add --no-cache curl ca-certificates busybox python3 py3-pip bash jq openssh-client; pip install --break-system-packages beautifulsoup4 requests 2>/dev/null"
-wsl --terminate OpenMinisSandbox 2>$null
+Invoke-WebRequest -Uri $mirrorUrl -OutFile $rootfsTar
 
-Write-Host "`n=====================================================" -ForegroundColor Green
-Write-Host "   [✓] OpenMinis WSL2 沙箱安装全部完成！             " -ForegroundColor Green
-Write-Host "   请返回 OpenMinis 软件点击【刷新状态】即可开始使用 " -ForegroundColor Green
-Write-Host "=====================================================" -ForegroundColor Green
-Write-Host "`n按回车键退出此窗口..."
-Read-Host
+Write-Host ""
+Write-Host "[2/4] 下载成功！正在解压并导入 WSL2 沙箱 ($distroName)..." -ForegroundColor Green
+wsl --unregister $distroName 2>$null
+wsl --import $distroName $sandboxDir $rootfsTar --version 2
+
+Write-Host ""
+Write-Host "[3/4] 正在配置安全隔离与工作区目录结构..." -ForegroundColor Green
+$wslConf = @"
+[automount]
+enabled = false
+mountFsTab = false
+
+[interop]
+enabled = false
+appendWindowsPath = false
+
+[network]
+generateResolvConf = true
+"@
+$wslConf | wsl -d $distroName -u root -e tee /etc/wsl.conf | Out-Null
+
+$setupSh = @"
+mkdir -p /var/minis/workspace /var/minis/attachments /var/minis/offloads /var/minis/shared /var/minis/mounts /var/minis/skills
+chmod 777 -R /var/minis
+sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories
+apk update && apk add --no-cache bash curl jq python3 py3-pip openssh-client sshpass
+"@
+$setupSh | wsl -d $distroName -u root -e sh | Out-Null
+
+Write-Host ""
+Write-Host "[4/4] 恭喜！OpenMinis 沙箱环境已全部安装就绪！" -ForegroundColor Cyan
+Write-Host "请关闭本窗口，并在 OpenMinis 界面点击【我已完成安装，立即检测】或重启软件即可。" -ForegroundColor Yellow
+Write-Host ""
+Read-Host "按 Enter 回车键退出本窗口"
 "#;
-        let temp_script = std::env::temp_dir().join("install_openminis_sandbox.ps1");
-        let _ = std::fs::write(&temp_script, ps_code);
-        std::process::Command::new("powershell.exe")
-            .args(["-ExecutionPolicy", "Bypass", "-NoProfile", "-File", &temp_script.to_string_lossy()])
-            .spawn()
-            .map_err(|e| format!("无法唤起 PowerShell 终端: {}", e))?;
-        return Ok(());
-    }
-    Err("仅支持 Windows 环境".to_string())
-}
 
-// === 自动从供应商拉取可用模型列表 ===
+    let temp_dir = std::env::var("TEMP").unwrap_or_else(|_| "C:\\Temp".to_string());
+    let script_path = std::path::Path::new(&temp_dir).join("init_openminis_sandbox.ps1");
+    std::fs::write(&script_path, script_content).map_err(|e| format!("写入临时脚本失败: {}", e))?;
+
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.args([
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script_path.to_str().unwrap_or_default(),
+    ]);
+
+    let _ = cmd.spawn();
+    Ok(())
+}
 
 #[tauri::command]
-async fn fetch_provider_models(provider_url: String, api_key: String) -> Result<Vec<String>, String> {
+async fn fetch_provider_models(
+    provider_url: String,
+    api_key: String,
+) -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|e| e.to_string())?;
+        .unwrap_or_else(|_| reqwest::Client::new());
 
-    let base = provider_url.trim_end_matches('/');
-    let primary_url = if base.ends_with("/v1") {
-        format!("{}/models", base)
-    } else {
-        format!("{}/v1/models", base)
-    };
-
-    let mut req = client.get(&primary_url);
+    let url = format!("{}/models", provider_url.trim_end_matches('/'));
+    let mut req = client.get(&url);
     if !api_key.trim().is_empty() {
         req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
     }
 
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                return parse_models_json(&json);
-            }
-        }
-        _ => {
-            let fallback_url = format!("{}/models", base);
-            let mut req2 = client.get(&fallback_url);
-            if !api_key.trim().is_empty() {
-                req2 = req2.header("Authorization", format!("Bearer {}", api_key.trim()));
-            }
-            if let Ok(resp2) = req2.send().await {
-                if resp2.status().is_success() {
-                    if let Ok(json2) = resp2.json::<serde_json::Value>().await {
-                        return parse_models_json(&json2);
-                    }
-                }
-            }
-        }
+    let resp = req.send().await.map_err(|e| format!("网络请求失败: {}", e))?;
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return Err(format!("服务商返回错误 (HTTP {}): {}", resp.status(), err_text));
     }
 
-    Err("未能从供应商获取到模型列表，请确认 Base URL 与 API Key 是否正确".to_string())
-}
-
-fn parse_models_json(json: &serde_json::Value) -> Result<Vec<String>, String> {
+    let val: serde_json::Value = resp.json().await.map_err(|e| format!("解析 JSON 响应失败: {}", e))?;
     let mut models = Vec::new();
-    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-        for m in data {
-            if let Some(id) = m.get("id").and_then(|i| i.as_str()) {
+
+    if let Some(arr) = val.get("data").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                 models.push(id.to_string());
             }
         }
-    } else if let Some(data) = json.get("models").and_then(|d| d.as_array()) {
-        for m in data {
-            if let Some(id) = m.get("name").or(m.get("id")).and_then(|i| i.as_str()) {
+    } else if let Some(arr) = val.as_array() {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                 models.push(id.to_string());
             }
         }
@@ -364,119 +388,199 @@ fn parse_models_json(json: &serde_json::Value) -> Result<Vec<String>, String> {
     models.dedup();
 
     if models.is_empty() {
-        Err("供应商返回数据中未包含有效模型 ID".to_string())
-    } else {
-        Ok(models)
+        return Err("服务商返回的模型列表为空".to_string());
     }
+
+    Ok(models)
 }
 
-// === MCP (Model Context Protocol) 管理命令 ===
+// === 模型组与用量 (对标原版) ===
 
 #[tauri::command]
-async fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServer>, String> {
-    state.mcp.list_servers()
-}
-
-#[tauri::command]
-async fn add_mcp_server(state: State<'_, AppState>, server: McpServer) -> Result<(), String> {
-    state.mcp.add_server(server)
-}
-
-#[tauri::command]
-async fn remove_mcp_server(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.mcp.remove_server(&id)
-}
-
-#[tauri::command]
-async fn toggle_mcp_server(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.mcp.toggle_server(&id)
-}
-
-// === Token 用量统计命令 (对标截图 1000143344) ===
-
-#[tauri::command]
-async fn get_usage_dashboard(state: State<'_, AppState>) -> Result<TotalUsageDashboard, String> {
+fn get_usage_dashboard(state: State<'_, AppState>) -> Result<TotalUsageDashboard, String> {
     Ok(state.usage.get_dashboard_summary())
 }
 
-// === 模型组与 Defaults 管理命令 (对标截图 1000143328) ===
-
 #[tauri::command]
-async fn get_model_groups_state(state: State<'_, AppState>) -> Result<FullModelGroupsState, String> {
+fn get_model_groups_state(state: State<'_, AppState>) -> Result<FullModelGroupsState, String> {
     Ok(state.model_groups.get_state())
 }
 
 #[tauri::command]
-async fn save_model_groups_state(
+fn save_model_groups_state(
     state: State<'_, AppState>,
-    state_data: FullModelGroupsState,
+    model_groups_state: FullModelGroupsState,
 ) -> Result<(), String> {
-    state.model_groups.save_state(state_data)
+    state.model_groups.save_state(model_groups_state)
 }
 
-// === 会话管理命令 ===
+// === 灵魂人设设定 (SOUL.md) ===
 
 #[tauri::command]
-async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<session::SessionRecord>, String> {
+fn get_soul_config(state: State<'_, AppState>) -> Result<SoulConfig, String> {
+    Ok(state.soul.get_soul())
+}
+
+#[tauri::command]
+fn save_soul_config(state: State<'_, AppState>, config: SoulConfig) -> Result<(), String> {
+    state.soul.save_soul(config)
+}
+
+// === 技能系统 (MinisSkills) ===
+
+#[tauri::command]
+fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillItem>, String> {
+    Ok(state.skills.list_skills())
+}
+
+// === 外部目录挂载 (Mounted Folders) ===
+
+#[tauri::command]
+fn list_mounted_folders(state: State<'_, AppState>) -> Result<Vec<MountedFolderItem>, String> {
+    Ok(state.mounts.list_mounts())
+}
+
+#[tauri::command]
+async fn add_mounted_folder(
+    state: State<'_, AppState>,
+    host_path: String,
+    mount_name: String,
+) -> Result<MountedFolderItem, String> {
+    state.mounts.add_mount(&host_path, &mount_name).await
+}
+
+#[tauri::command]
+async fn remove_mounted_folder(
+    state: State<'_, AppState>,
+    mount_name: String,
+) -> Result<(), String> {
+    state.mounts.remove_mount(&mount_name).await
+}
+
+// === 宿主 Native Offloads ===
+
+#[tauri::command]
+fn send_native_notification(title: String, message: String) -> Result<(), String> {
+    WindowsOffload::send_notification(&title, &message);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_system_info() -> Result<serde_json::Value, String> {
+    Ok(WindowsOffload::get_system_summary())
+}
+
+// === MCP 管理 ===
+
+#[tauri::command]
+fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServer>, String> {
+    state.mcp.list_servers()
+}
+
+#[tauri::command]
+fn add_mcp_server(state: State<'_, AppState>, server: McpServer) -> Result<(), String> {
+    state.mcp.add_server(server)
+}
+
+#[tauri::command]
+fn remove_mcp_server(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.mcp.remove_server(&id)
+}
+
+#[tauri::command]
+fn toggle_mcp_server(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.mcp.toggle_server(&id)
+}
+
+// === 会话管理与恢复 ===
+
+#[tauri::command]
+fn list_sessions(state: State<'_, AppState>) -> Result<Vec<session::SessionSummary>, String> {
     state.sessions.list_sessions()
 }
 
 #[tauri::command]
-async fn get_session_messages(state: State<'_, AppState>, id: String) -> Result<Vec<ChatMessage>, String> {
+fn get_session_messages(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<ChatMessage>, String> {
     state.sessions.get_session_messages(&id)
 }
 
 #[tauri::command]
-async fn search_sessions(state: State<'_, AppState>, query: String) -> Result<Vec<session::SessionRecord>, String> {
+fn search_sessions(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<session::SessionSummary>, String> {
     state.sessions.search_sessions(&query)
 }
 
 #[tauri::command]
-async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.sessions.delete_session(&id)
 }
 
-// === 定时任务命令 ===
+// === 定时任务调度器 ===
 
 #[tauri::command]
-async fn list_tasks(state: State<'_, AppState>) -> Result<Vec<ScheduledTask>, String> {
+fn list_tasks(state: State<'_, AppState>) -> Result<Vec<ScheduledTask>, String> {
     state.scheduler.list_tasks()
 }
 
 #[tauri::command]
-async fn add_task(state: State<'_, AppState>, task: ScheduledTask) -> Result<(), String> {
+fn add_task(state: State<'_, AppState>, task: ScheduledTask) -> Result<(), String> {
     state.scheduler.add_task(task)
 }
 
 #[tauri::command]
-async fn remove_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
+fn remove_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.scheduler.remove_task(&id)
 }
 
 #[tauri::command]
-async fn toggle_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
+fn toggle_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.scheduler.toggle_task(&id)
 }
 
-// === 记忆系统命令 ===
+// === 记忆系统 (1:1 原版) ===
 
 #[tauri::command]
-async fn write_memory(
+fn write_memory(
     state: State<'_, AppState>,
-    category: MemoryCategory,
+    category: String,
     content: String,
 ) -> Result<String, String> {
-    state.memory.write_memory(category, &content)
+    let cat = match category.as_str() {
+        "preference" => MemoryCategory::UserPreference,
+        "project" => MemoryCategory::ProjectContext,
+        "skill" => MemoryCategory::LearnedSkill,
+        "todo" => MemoryCategory::ActionItem,
+        _ => MemoryCategory::Fact,
+    };
+    state.memory.write_memory(cat, &content)
 }
 
 #[tauri::command]
-async fn search_memory(state: State<'_, AppState>, query: String) -> Result<Vec<MemoryEntry>, String> {
+fn search_memory(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<MemoryEntry>, String> {
     state.memory.search_memory(&query)
 }
 
 #[tauri::command]
-async fn get_today_memory(state: State<'_, AppState>) -> Result<String, String> {
+fn get_today_memory(state: State<'_, AppState>) -> Result<String, String> {
     state.memory.get_today_memory()
+}
+
+#[tauri::command]
+fn get_global_memory(state: State<'_, AppState>) -> Result<String, String> {
+    state.memory.get_global_memory()
+}
+
+#[tauri::command]
+fn save_global_memory(state: State<'_, AppState>, content: String) -> Result<(), String> {
+    state.memory.save_global_memory(&content)
 }
 
 fn main() {
@@ -485,8 +589,18 @@ fn main() {
     let memory = Arc::new(MemoryStore::new());
     let usage = Arc::new(UsageTracker::new());
     let model_groups = Arc::new(ModelGroupManager::new());
+    let soul = Arc::new(SoulManager::new());
+    let skills = Arc::new(SkillsManager::new());
+    let mounts = Arc::new(MountManager::new(sandbox.distro_name.clone()));
     let dispatcher = Arc::new(ToolDispatcher::new(sandbox.clone(), browser.clone(), memory.clone()));
-    let agent = Arc::new(AgentEngine::new(dispatcher.clone(), usage.clone()));
+    let agent = Arc::new(AgentEngine::new(
+        dispatcher.clone(),
+        usage.clone(),
+        memory.clone(),
+        soul.clone(),
+        skills.clone(),
+        mounts.clone(),
+    ));
     let sessions = Arc::new(SessionStore::new());
     let scheduler = Arc::new(CronScheduler::new());
     let mcp = Arc::new(McpManager::new());
@@ -504,6 +618,9 @@ fn main() {
         mcp,
         usage,
         model_groups,
+        soul,
+        skills,
+        mounts,
     };
 
     tauri::Builder::default()
@@ -535,6 +652,7 @@ fn main() {
             import_local_files_by_path,
             execute_sandbox_shell,
             run_agent_turn,
+            abort_agent_turn,
             open_sandbox_dir,
             launch_interactive_terminal,
             terminate_sandbox,
@@ -550,6 +668,18 @@ fn main() {
             get_usage_dashboard,
             get_model_groups_state,
             save_model_groups_state,
+            // 灵魂与个性化人设
+            get_soul_config,
+            save_soul_config,
+            // 技能扩展
+            list_skills,
+            // 外部目录挂载
+            list_mounted_folders,
+            add_mounted_folder,
+            remove_mounted_folder,
+            // Native Offloads
+            send_native_notification,
+            get_system_info,
             // MCP 管理
             list_mcp_servers,
             add_mcp_server,
@@ -568,7 +698,9 @@ fn main() {
             // 记忆系统
             write_memory,
             search_memory,
-            get_today_memory
+            get_today_memory,
+            get_global_memory,
+            save_global_memory
         ])
         .run(tauri::generate_context!())
         .expect("启动 OpenMinis Windows 应用失败");

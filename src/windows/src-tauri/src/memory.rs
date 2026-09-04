@@ -1,5 +1,5 @@
 //! OpenMinis Windows 持久化记忆系统 (跨天动态感知与全库检索加固版)
-//! 备注：私人用极度不稳定 Aicoding 改
+//! 备注：Windows 测试版 (Experimental)
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -26,8 +26,8 @@ pub enum MemoryCategory {
 }
 
 pub struct MemoryStore {
-    memory_dir: PathBuf,
-    global_path: PathBuf,
+    pub memory_dir: PathBuf,
+    pub global_path: PathBuf,
     lock: Arc<Mutex<()>>,
 }
 
@@ -144,16 +144,64 @@ impl MemoryStore {
     /// 获取全局记忆 (GLOBAL.md)
     pub fn get_global_memory(&self) -> Result<String, String> {
         let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        if !self.global_path.exists() {
+            return Ok("# Global Memory\n\n<!-- 跨会话长期持久化偏好与关键事实 -->\n".to_string());
+        }
         std::fs::read_to_string(&self.global_path).map_err(|e| format!("读取全局记忆失败: {}", e))
     }
 
-    /// 初始化全局记忆文件
-    pub fn ensure_global_exists(&self) -> Result<(), String> {
+    /// 保存全局记忆 (GLOBAL.md)
+    pub fn save_global_memory(&self, content: &str) -> Result<(), String> {
         let _guard = self.lock.lock().map_err(|e| e.to_string())?;
-        if !self.global_path.exists() {
-            std::fs::write(&self.global_path, "# Global Memory\n\n<!-- 持久化全局偏好与约定 -->\n")
-                .map_err(|e| format!("初始化全局记忆失败: {}", e))?;
+        std::fs::write(&self.global_path, content)
+            .map_err(|e| format!("写入全局记忆失败: {}", e))
+    }
+
+    /// 获取 1:1 对标原版的记忆自动注入片段 (GLOBAL.md + 最近 3 天日志)
+    pub fn get_recent_memories_fragment(&self) -> String {
+        let mut fragment = String::new();
+
+        // 1. GLOBAL.md 全局记忆
+        if self.global_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&self.global_path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() && trimmed != "# Global Memory" {
+                    fragment.push_str("\n\nGlobal memory (GLOBAL.md — user-maintained facts & preferences):\n");
+                    fragment.push_str(trimmed);
+                    fragment.push('\n');
+                }
+            }
         }
-        Ok(())
+
+        // 2. 最近 3 天历史日志
+        let mut daily_files: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.memory_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("md") {
+                    daily_files.push(p);
+                }
+            }
+        }
+        daily_files.sort();
+        daily_files.reverse(); // 从最新到最旧
+
+        let recent_3: Vec<_> = daily_files.into_iter().take(3).collect();
+        if !recent_3.is_empty() {
+            fragment.push_str("\nRecent memories (auto-injected from daily logs):\n");
+            for file_path in recent_3 {
+                let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    let lines: Vec<&str> = content.lines().take(100).collect();
+                    if !lines.is_empty() {
+                        fragment.push_str(&format!("--- Daily log ({}) ---\n", filename));
+                        fragment.push_str(&lines.join("\n"));
+                        fragment.push('\n');
+                    }
+                }
+            }
+        }
+
+        fragment
     }
 }
