@@ -51,6 +51,20 @@ interface ProviderPreset {
   autoAppendV1?: boolean;
 }
 
+/**
+ * 规范化服务商 API 地址（对标原版 effectiveBaseURL）：
+ * 先 trim 空白 + trimEnd('/') 去掉尾斜杠，再判断是否追加 /v1。
+ * 修复尾斜杠导致的 /v1//v1 重复追加 bug。
+ */
+function normalizeProviderUrl(rawUrl: string, autoAppendV1?: boolean): string {
+  let base = (rawUrl || "").trim().replace(/\/+$/, "");
+  if (base === "") return base;
+  if (autoAppendV1 && !base.endsWith("/v1")) {
+    base = `${base}/v1`;
+  }
+  return base;
+}
+
 const PRESETS: ProviderPreset[] = [
   {
     id: "preset-deepseek",
@@ -228,15 +242,12 @@ export function ProviderManager({
     setIsFetchingModels(true);
     setTestResult(null);
 
-    let targetUrl = editingProvider.provider_url.trim();
-    if (editingProvider.auto_append_v1 && !targetUrl.endsWith("/v1")) {
-      targetUrl = `${targetUrl.replace(/\/+$/, '')}/v1`;
-    }
+    let targetUrl = normalizeProviderUrl(editingProvider.provider_url, editingProvider.auto_append_v1);
 
     try {
       const models = await invoke<string[]>("fetch_provider_models", {
         providerUrl: targetUrl,
-        apiKey: editingProvider.api_key.trim(),
+        apiKey: editingProvider.api_key || "",
       });
 
       if (models && models.length > 0) {
@@ -262,14 +273,11 @@ export function ProviderManager({
 
     const start = Date.now();
     try {
-      let targetUrl = editingProvider.provider_url.trim();
-      if (editingProvider.auto_append_v1 && !targetUrl.endsWith("/v1")) {
-        targetUrl = `${targetUrl.replace(/\/+$/, '')}/v1`;
-      }
+      let targetUrl = normalizeProviderUrl(editingProvider.provider_url, editingProvider.auto_append_v1);
 
       await invoke<string[]>("fetch_provider_models", {
         providerUrl: targetUrl,
-        apiKey: editingProvider.api_key.trim(),
+        apiKey: editingProvider.api_key || "",
       });
       const elapsed = Date.now() - start;
       const updated = { ...editingProvider, latency_ms: elapsed };

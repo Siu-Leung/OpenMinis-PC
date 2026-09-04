@@ -56,6 +56,15 @@ export function LogsManager({ onClose }: LogsManagerProps) {
     loadLogs();
   }, []);
 
+  const handleToggleLogging = async (checked: boolean) => {
+    setLoggingEnabled(checked);
+    try {
+      await invoke<boolean>("set_logging_enabled", { enabled: checked });
+    } catch (err) {
+      console.error("切换日志开关失败:", err);
+    }
+  };
+
   const handleOpenFile = async (file: LogFileInfo) => {
     setSelectedFile(file);
     setLoadingContent(true);
@@ -141,7 +150,7 @@ export function LogsManager({ onClose }: LogsManagerProps) {
               <input
                 type="checkbox"
                 checked={loggingEnabled}
-                onChange={e => setLoggingEnabled(e.target.checked)}
+                onChange={e => handleToggleLogging(e.target.checked)}
                 className="w-4 h-4 accent-[#0A84FF]"
               />
             </div>

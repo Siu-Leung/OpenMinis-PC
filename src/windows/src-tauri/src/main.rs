@@ -675,6 +675,12 @@ fn delete_all_logs() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_logging_enabled(enabled: bool) -> Result<bool, String> {
+    logs::set_logging_enabled(enabled);
+    Ok(logs::is_logging_enabled())
+}
+
+#[tauri::command]
 async fn export_log_file(name: String, content: String) -> Result<String, String> {
     let script = format!(
         r#"
@@ -749,10 +755,8 @@ async fn test_model_multimodal(
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    let mut clean_url = provider_url.trim().trim_end_matches('/').to_string();
-    if !clean_url.ends_with("/v1") && !clean_url.contains("/v1/") {
-        clean_url.push_str("/v1");
-    }
+    // 前端已按 auto_append_v1 拼好最终 URL，此处仅去除尾斜杠，不再重复追加 /v1
+    let clean_url = provider_url.trim().trim_end_matches('/').to_string();
     let url = format!("{}/chat/completions", clean_url);
     let start = std::time::Instant::now();
 
@@ -818,10 +822,8 @@ async fn test_model_latency(
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    let mut clean_url = provider_url.trim().trim_end_matches('/').to_string();
-    if !clean_url.ends_with("/v1") && !clean_url.contains("/v1/") {
-        clean_url.push_str("/v1");
-    }
+    // 前端已按 auto_append_v1 拼好最终 URL，此处仅去除尾斜杠，不再重复追加 /v1
+    let clean_url = provider_url.trim().trim_end_matches('/').to_string();
     let url = format!("{}/chat/completions", clean_url);
     let start = std::time::Instant::now();
 
@@ -910,6 +912,7 @@ fn save_global_memory(state: State<'_, AppState>, content: String) -> Result<(),
 }
 
 fn main() {
+    logs::init_logging_state();
     let sandbox = Arc::new(SandboxManager::new());
     let browser = Arc::new(BrowserEngine::new(sandbox.clone()));
     let memory = Arc::new(MemoryStore::new());
@@ -1037,6 +1040,7 @@ fn main() {
             read_log_file,
             delete_all_logs,
             export_log_file,
+            set_logging_enabled,
             // 备份与恢复
             create_backup,
             restore_backup,

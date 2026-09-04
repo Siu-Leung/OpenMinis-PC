@@ -6,6 +6,7 @@ use crate::skills::SkillsManager;
 use crate::soul::SoulManager;
 use crate::tools::ToolDispatcher;
 use crate::usage::UsageTracker;
+use crate::logs::append_log;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -77,6 +78,8 @@ pub struct AgentConfig {
     pub provider_url: String,
     pub api_key: String,
     pub model: String,
+    #[serde(default)]
+    pub auto_append_v1: Option<bool>, // 是否自动追加 /v1 后缀 (对标原版 appendV1Suffix)
     pub fallback_models: Option<Vec<String>>, // 模型组回退队列
     #[serde(default)]
     pub fallback_targets: Option<Vec<FallbackModelTarget>>, // 带有专属凭证的多提供商回退队列
@@ -259,15 +262,17 @@ impl AgentEngine {
                 }
 
                 if idx > 0 {
+                    append_log(&format!("[Agent] 主模型故障，回退至: {}", try_model));
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "fallback".to_string(),
                         content: format!("⚠️ 主模型遇到故障，已自动平滑回退至组内模型: {}", try_model),
                     });
                 }
 
+                // 端点规范化 (对标原版 effectiveBaseURL: 先 trimEnd('/') 再判断是否追加 /v1)
                 let mut target_endpoint = try_url.trim().trim_end_matches('/').to_string();
                 if !target_endpoint.ends_with("/chat/completions") {
-                    if !target_endpoint.ends_with("/v1") && (target_endpoint.contains("openai.com") || target_endpoint.contains("siliconflow") || target_endpoint.contains("moonshot") || target_endpoint.contains("openrouter") || target_endpoint.contains("localhost:11434")) {
+                    if config.auto_append_v1.unwrap_or(true) && !target_endpoint.ends_with("/v1") {
                         target_endpoint.push_str("/v1");
                     }
                     target_endpoint.push_str("/chat/completions");
@@ -490,6 +495,7 @@ impl AgentEngine {
 
             if !stream_success {
                 let err_msg = format!("所有备选模型均调用失败: {}", last_error_msg);
+                append_log(&format!("[Agent] 模型调用失败: {}", err_msg));
                 let _ = app.emit("agent-stream", StreamEvent {
                     event_type: "error".to_string(),
                     content: err_msg.clone(),
@@ -615,6 +621,7 @@ impl AgentEngine {
                         event_type: "tool_start".to_string(),
                         content: format!("正在调用: {}", fn_name),
                     });
+                    append_log(&format!("[Tool] 调用 {} 参数: {}", fn_name, fn_args_str));
 
                     let result = self.dispatcher.dispatch(fn_name, fn_args).await;
 
