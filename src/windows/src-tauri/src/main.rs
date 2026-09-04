@@ -154,11 +154,6 @@ async fn upload_chat_attachment(
     let clean_name = name.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_', "_");
     let target_dir = if is_media { "/var/minis/attachments" } else { "/var/minis/workspace" };
     let target_path = format!("{}/{}", target_dir, clean_name);
-    let minis_home = sandbox::SandboxManager::get_minis_home();
-    let host_target = if is_media { minis_home.join("attachments") } else { minis_home.join("workspace") };
-    let _ = std::fs::create_dir_all(&host_target);
-    let _ = std::fs::write(host_target.join(&clean_name), &bytes);
-
     let raw_b64 = if let Some(idx) = base64_data.find(',') {
         &base64_data[idx + 1..]
     } else {
@@ -167,6 +162,11 @@ async fn upload_chat_attachment(
 
     let b64_clean = raw_b64.replace(['\r', '\n', ' '], "");
     let bytes = sandbox::base64_decode(&b64_clean).map_err(|e| format!("Base64 解码失败: {}", e))?;
+
+    let minis_home = sandbox::SandboxManager::get_minis_home();
+    let host_target = if is_media { minis_home.join("attachments") } else { minis_home.join("workspace") };
+    let _ = std::fs::create_dir_all(&host_target);
+    let _ = std::fs::write(host_target.join(&clean_name), &bytes);
 
     state.sandbox.write_sandbox_bytes(&target_path, &bytes, false).await?;
 
