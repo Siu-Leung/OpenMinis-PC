@@ -362,9 +362,10 @@ async fn fetch_provider_models(
     }
 
     let resp = req.send().await.map_err(|e| format!("网络请求失败: {}", e))?;
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
         let err_text = resp.text().await.unwrap_or_default();
-        return Err(format!("服务商返回错误 (HTTP {}): {}", resp.status(), err_text));
+        return Err(format!("服务商返回错误 (HTTP {}): {}", status, err_text));
     }
 
     let val: serde_json::Value = resp.json().await.map_err(|e| format!("解析 JSON 响应失败: {}", e))?;
@@ -495,7 +496,7 @@ fn toggle_mcp_server(state: State<'_, AppState>, id: String) -> Result<(), Strin
 // === 会话管理与恢复 ===
 
 #[tauri::command]
-fn list_sessions(state: State<'_, AppState>) -> Result<Vec<session::SessionSummary>, String> {
+fn list_sessions(state: State<'_, AppState>) -> Result<Vec<session::SessionRecord>, String> {
     state.sessions.list_sessions()
 }
 
@@ -511,7 +512,7 @@ fn get_session_messages(
 fn search_sessions(
     state: State<'_, AppState>,
     query: String,
-) -> Result<Vec<session::SessionSummary>, String> {
+) -> Result<Vec<session::SessionRecord>, String> {
     state.sessions.search_sessions(&query)
 }
 

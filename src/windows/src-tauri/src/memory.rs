@@ -157,6 +157,15 @@ impl MemoryStore {
             .map_err(|e| format!("写入全局记忆失败: {}", e))
     }
 
+    /// 初始化确保全局记忆文件存在
+    pub fn ensure_global_exists(&self) -> Result<(), String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        if !self.global_path.exists() {
+            let _ = std::fs::write(&self.global_path, "# Global Memory\n\n<!-- 跨会话长期持久化偏好与关键事实 -->\n");
+        }
+        Ok(())
+    }
+
     /// 获取 1:1 对标原版的记忆自动注入片段 (GLOBAL.md + 最近 3 天日志)
     pub fn get_recent_memories_fragment(&self) -> String {
         let mut fragment = String::new();
