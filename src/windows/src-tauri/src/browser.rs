@@ -124,13 +124,22 @@ print(text[:10000])
                 // 真实调用 Edge 生成网页像素级截图 (外层套 25 秒硬超时)
                 let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
                 let filename = format!("screenshot_{}.png", timestamp);
+
+                // 沙箱内目录 (Agent 可 ls 到)
+                let _ = self.sandbox.execute_shell("mkdir -p /var/minis/attachments", 5).await;
+
+                // 宿主机副本目录 (供 read_image_data_url 优先读取)
                 let minis_home = crate::sandbox::SandboxManager::get_minis_home();
                 let att_dir = minis_home.join("attachments");
                 let _ = std::fs::create_dir_all(&att_dir);
-                let target_shot_path = att_dir.join(&filename);
-                let target_shot_str = target_shot_path.to_string_lossy().to_string();
+                let host_copy_path = att_dir.join(&filename);
 
-                let _ = self.sandbox.execute_shell("mkdir -p /var/minis/attachments", 5).await;
+                // 沙箱 UNC 路径: \\wsl$\OpenMinisSandbox\var\minis\attachments\xxx.png
+                let distro_name = &self.sandbox.distro_name;
+                let target_shot_str = format!(
+                    r"\\wsl$\{}\var\minis\attachments\{}",
+                    distro_name, filename
+                );
 
                 let mut edge_shot_cmd = Command::new(edge_path);
                 edge_shot_cmd.args([
@@ -148,6 +157,12 @@ print(text[:10000])
 
                 match edge_shot {
                     Ok(Ok(out)) if out.status.success() => {
+                        // 复制一份到宿主机副本 (供前端 read_image_data_url 兜底)
+                        let copy_cmd = format!(
+                            "cp '/var/minis/attachments/{}' '{}' 2>/dev/null || true",
+                            filename, host_copy_path.to_string_lossy()
+                        );
+                        let _ = self.sandbox.execute_shell(&copy_cmd, 5).await;
                         BrowserActionResult {
                             success: true,
                             data: Some(format!("minis://attachments/{}", filename)),
