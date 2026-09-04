@@ -3372,7 +3372,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.14 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.15 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3416,7 +3416,7 @@ export default function App() {
                       setUpdateUrl("");
                       try {
                         const curVerRaw = await invoke<string>("get_app_version").catch(() => "");
-                        const curVer = curVerRaw ? `v${curVerRaw}` : "v1.13.0.14";
+                        const curVer = curVerRaw ? `v${curVerRaw}` : "v1.13.0.15";
                         const res = await fetch("https://api.github.com/repos/Siu-Leung/OpenMinis-PC/releases/latest");
                         if (res.ok) {
                           const data = await res.json();
@@ -3471,7 +3471,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.14 (Windows 测试版)
+                  当前版本：1.13.0.15 (Windows 测试版)
                 </div>
               </div>
             </div>
