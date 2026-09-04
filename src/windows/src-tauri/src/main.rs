@@ -258,6 +258,11 @@ fn restart_app(app: AppHandle) {
 }
 
 #[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("仅支持以 http 或 https 开头的安全外部链接".to_string());
@@ -341,7 +346,9 @@ Read-Host "按 Enter 回车键退出本窗口"
 
     let temp_dir = std::env::var("TEMP").unwrap_or_else(|_| "C:\\Temp".to_string());
     let script_path = std::path::Path::new(&temp_dir).join("init_openminis_sandbox.ps1");
-    std::fs::write(&script_path, script_content).map_err(|e| format!("写入临时脚本失败: {}", e))?;
+    let mut script_bytes = vec![0xEF, 0xBB, 0xBF];
+    script_bytes.extend_from_slice(script_content.as_bytes());
+    std::fs::write(&script_path, script_bytes).map_err(|e| format!("写入临时脚本失败: {}", e))?;
 
     let mut cmd = std::process::Command::new("powershell.exe");
     cmd.args([
@@ -667,6 +674,38 @@ fn delete_all_logs() -> Result<(), String> {
     logs::delete_all_logs()
 }
 
+#[tauri::command]
+async fn export_log_file(name: String, content: String) -> Result<String, String> {
+    let script = format!(
+        r#"
+        Add-Type -AssemblyName System.Windows.Forms
+        $f = New-Object System.Windows.Forms.SaveFileDialog
+        $f.Filter = "日志文件 (*.log;*.txt)|*.log;*.txt|所有文件 (*.*)|*.*"
+        $f.FileName = "{}"
+        $f.Title = "导出系统日志文件"
+        if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+            Write-Output $f.FileName
+        }}
+    "#,
+        name
+    );
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().map_err(|e| format!("打开保存对话框失败: {}", e))?;
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return Err("用户取消了导出".to_string());
+    }
+
+    std::fs::write(&path, content).map_err(|e| format!("保存日志文件失败: {}", e))?;
+    Ok(path)
+}
+
 // === 备份与恢复 ===
 
 #[tauri::command]
@@ -949,6 +988,7 @@ fn main() {
             open_sandbox_rootfs_dir,
             restart_app,
             open_external_url,
+            get_app_version,
             launch_installer_terminal,
             fetch_provider_models,
             // 模型组与用量 (对标原版)
@@ -996,6 +1036,7 @@ fn main() {
             get_logs_summary,
             read_log_file,
             delete_all_logs,
+            export_log_file,
             // 备份与恢复
             create_backup,
             restore_backup,

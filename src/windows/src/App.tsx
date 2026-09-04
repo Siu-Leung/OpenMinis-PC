@@ -510,6 +510,99 @@ export default function App() {
 
   // 工具步骤折叠状态 (Turn 级)
   const [expandedToolTurns, setExpandedToolTurns] = useState<{ [turnId: string]: boolean }>({});
+  // 消息右键上下文菜单 (对标原版 117dbaf09febb772242d9c62928d86b3_2351b6.jpg)
+  const [messageContextMenu, setMessageContextMenu] = useState<{
+    x: number;
+    y: number;
+    turnIndex: number;
+    turn: ChatTurn;
+  } | null>(null);
+
+  const handleMessageContextMenu = (e: React.MouseEvent, turnIndex: number, turn: ChatTurn) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMessageContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      turnIndex,
+      turn,
+    });
+  };
+
+  const handleRetryFromUserTurn = async (turnIndex: number, turn: ChatTurn) => {
+    setMessageContextMenu(null);
+    if (loading) return;
+    const turns = aggregateMessagesIntoTurns(messages);
+    let sliceMsgCount = 0;
+    for (let i = 0; i <= turnIndex; i++) {
+      sliceMsgCount += turns[i].toolSteps.length + 1;
+    }
+    const truncated = messages.slice(0, sliceMsgCount);
+    setMessages(truncated);
+    setLoading(true);
+    setStreamingText("");
+    setStreamingThinking("");
+
+    const matchedGroup = modelGroupsState.groups.find(g => g.name === activeModel || g.fallback_models.includes(activeModel));
+    let actualModel = activeModel;
+    let fallbackTargets: any[] = [];
+    if (matchedGroup && matchedGroup.name === activeModel && matchedGroup.fallback_models.length > 0) {
+      actualModel = matchedGroup.fallback_models[0];
+      for (const m of matchedGroup.fallback_models.slice(1)) {
+        const owner = providers.find(p => p.models.includes(m));
+        fallbackTargets.push({ model: m, provider_url: owner?.provider_url, api_key: owner?.api_key });
+      }
+    }
+    const ownerProvider = providers.find(p => p.models.includes(actualModel)) || providers.find(p => p.id === activeProviderId) || providers[0];
+
+    const config: any = {
+      session_id: currentSessionId || undefined,
+      provider_id: ownerProvider?.id,
+      provider_url: ownerProvider?.provider_url,
+      api_key: ownerProvider?.api_key,
+      model: actualModel,
+      fallback_models: fallbackTargets.map(t => t.model),
+      fallback_targets: fallbackTargets,
+      thinking_level: thinkingLevel,
+    };
+
+    try {
+      const updated = await invoke<ChatMessage[]>("run_agent_turn", {
+        config,
+        sessionId: currentSessionId,
+        messages: truncated,
+      });
+      setMessages(updated);
+      loadSessions();
+    } catch (err) {
+      alert(`重试失败: ${err}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditUserTurn = (turnIndex: number, turn: ChatTurn) => {
+    setMessageContextMenu(null);
+    setInput(turn.content);
+    const turns = aggregateMessagesIntoTurns(messages);
+    let sliceMsgCount = 0;
+    for (let i = 0; i < turnIndex; i++) {
+      sliceMsgCount += turns[i].toolSteps.length + 1;
+    }
+    setMessages(messages.slice(0, sliceMsgCount));
+  };
+
+  const handleDeleteFromTurn = (turnIndex: number) => {
+    setMessageContextMenu(null);
+    if (!confirm("确定要删除此消息及后续所有记录吗？")) return;
+    const turns = aggregateMessagesIntoTurns(messages);
+    let sliceMsgCount = 0;
+    for (let i = 0; i < turnIndex; i++) {
+      sliceMsgCount += turns[i].toolSteps.length + 1;
+    }
+    setMessages(messages.slice(0, sliceMsgCount));
+  };
+
 
 
   // 拖拽文件状态 (Drag & Drop)
@@ -699,6 +792,11 @@ export default function App() {
     return localStorage.getItem("openminis_accent_color") || "#0A84FF";
   });
 
+  useEffect(() => {
+    document.documentElement.style.setProperty("--accent-color", accentColor);
+    localStorage.setItem("openminis_accent_color", accentColor);
+  }, [accentColor]);
+
   // 技能、灵魂与外部挂载
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [soulConfig, setSoulConfig] = useState<SoulConfig>({ name: "Minis", instruction: "", active: true });
@@ -738,6 +836,7 @@ export default function App() {
   const [repairingSandbox, setRepairingSandbox] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
+  const [updateUrl, setUpdateUrl] = useState("");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -1045,21 +1144,48 @@ export default function App() {
     setStreamingThinking("");
     setAgentStatus("connecting");
 
-    // 计算当前模型所在模型组的 fallback 候选列表
-    let fallbackList: string[] = [];
+    // 解析当前模型与多服务商 Fallback 队列
+    let actualModel = activeModel;
+    let fallbackTargets: { model: string; provider_url?: string; api_key?: string }[] = [];
+
     const matchedGroup = modelGroupsState.groups.find(g => g.name === activeModel || g.fallback_models.includes(activeModel));
-    if (matchedGroup) {
-      fallbackList = matchedGroup.fallback_models.filter(m => m !== activeModel);
+
+    if (matchedGroup && matchedGroup.name === activeModel) {
+      // 选中的是模型组 (如 "AU") -> 取首个模型为主模型
+      if (matchedGroup.fallback_models.length > 0) {
+        actualModel = matchedGroup.fallback_models[0];
+      }
+      for (const m of matchedGroup.fallback_models.slice(1)) {
+        const owner = providers.find(p => p.models.includes(m));
+        fallbackTargets.push({
+          model: m,
+          provider_url: owner?.provider_url,
+          api_key: owner?.api_key,
+        });
+      }
+    } else if (matchedGroup) {
+      // 选中的是分组内模型 -> 其余模型作为 fallback
+      for (const m of matchedGroup.fallback_models.filter(m => m !== activeModel)) {
+        const owner = providers.find(p => p.models.includes(m));
+        fallbackTargets.push({
+          model: m,
+          provider_url: owner?.provider_url,
+          api_key: owner?.api_key,
+        });
+      }
     }
 
-    const config: AgentConfig = {
+    const ownerProvider = providers.find(p => p.models.includes(actualModel)) || currentProvider;
+
+    const config: any = {
       session_id: currentSessionId || undefined,
-      provider_id: currentProvider.id,
-      provider_url: currentProvider.provider_url,
-      api_key: currentProvider.api_key,
-      model: activeModel,
-      fallback_models: fallbackList.length > 0 ? fallbackList : undefined,
-      thinking_level: thinkingLevel,
+      provider_id: ownerProvider.id,
+      provider_url: ownerProvider.provider_url,
+      api_key: ownerProvider.api_key,
+      model: actualModel,
+      fallback_models: fallbackTargets.map(t => t.model),
+      fallback_targets: fallbackTargets,
+      thinking_level: matchedGroup?.enable_thinking ? (matchedGroup.thinking_effort || "medium") : thinkingLevel,
     };
 
     try {
@@ -1380,40 +1506,7 @@ export default function App() {
               <ChevronDown className="w-3.5 h-3.5 text-[#8E8E93]" />
             </button>
 
-            {/* UnifiedModelPicker 模型选择器 (1:1 官方设计 + ⚡ 测活) */}
-            {showModelPicker && (
-              <UnifiedModelPicker
-                providers={providers}
-                modelGroupsState={modelGroupsState}
-                activeModel={activeModel}
-                activeProviderId={activeProviderId}
-                thinkingLevel={thinkingLevel}
-                onSelectModel={(pId, m) => {
-                  setActiveProviderId(pId);
-                  setActiveModel(m);
-                  setShowModelPicker(false);
-                }}
-                onSelectGroup={group => {
-                  setActiveModel(group.name);
-                  if (group.fallback_models.length > 0) {
-                    const firstM = group.fallback_models[0];
-                    const owner = providers.find(p => p.models.includes(firstM));
-                    if (owner) setActiveProviderId(owner.id);
-                  }
-                  setShowModelPicker(false);
-                }}
-                onSetThinkingLevel={lvl => setThinkingLevel(lvl)}
-                onOpenGroupManager={() => {
-                  setShowModelPicker(false);
-                  setSettingsView("model_groups");
-                }}
-                onOpenProviderManager={() => {
-                  setShowModelPicker(false);
-                  setSettingsView("providers");
-                }}
-                onClose={() => setShowModelPicker(false)}
-              />
-            )}
+
           </div>
 
           {/* 顶栏右侧：1:1 原版更多选项菜单按钮 */}
@@ -1595,7 +1688,7 @@ export default function App() {
             return turns.map((turn, turnIdx) => {
               if (turn.role === "user") {
                 return (
-                  <div key={turn.id} className="flex flex-col items-end space-y-2">
+                  <div key={turn.id} onContextMenu={e => handleMessageContextMenu(e, turnIdx, turn)} className="flex flex-col items-end space-y-2 group select-text">
                     {turn.images && turn.images.length > 0 && (
                       <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
                         {turn.images.map((img, idx) => (
@@ -1616,7 +1709,7 @@ export default function App() {
               const isExpandedTools = !!expandedToolTurns[turn.id];
 
               return (
-                <div key={turn.id} className="flex flex-col space-y-2 text-[#000000] dark:text-[#E4E4E7]">
+                <div key={turn.id} onContextMenu={e => handleMessageContextMenu(e, turnIdx, turn)} className="flex flex-col space-y-2 text-[#000000] dark:text-[#E4E4E7] select-text">
                   {/* 1. 深度思考折叠条 */}
                   {turn.thinking && (
                     <div className="mb-1 max-w-2xl select-none">
@@ -3119,7 +3212,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.11 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.12 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3153,18 +3246,48 @@ export default function App() {
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#2C2C2E]">
                   <div
                     onClick={async () => {
+                      // 若已经拿到最新地址且当前无新版本，第二次点击直接跳转下载页
+                      if (updateUrl && !updateMsg.includes("发现新版本")) {
+                        invoke("open_external_url", { url: updateUrl });
+                        return;
+                      }
                       setCheckingUpdate(true);
+                      setUpdateMsg("");
+                      setUpdateUrl("");
                       try {
+                        const curVerRaw = await invoke<string>("get_app_version").catch(() => "");
+                        const curVer = curVerRaw ? `v${curVerRaw}` : "v1.13.0.12";
                         const res = await fetch("https://api.github.com/repos/Siu-Leung/OpenMinis-PC/releases/latest");
                         if (res.ok) {
                           const data = await res.json();
-                          const tag = data.tag_name || "v1.13.0.7";
-                          setUpdateMsg(`最新发布版本：${tag}（当前已是最新版本）`);
+                          const remoteTag = (data.tag_name || "").replace(/^v/, "");
+                          const htmlUrl = data.html_url || "https://github.com/Siu-Leung/OpenMinis-PC/releases";
+                          setUpdateUrl(htmlUrl);
+                          // 语义化版本号比较：逐段数字对比
+                          const parseVer = (v: string) => v.replace(/^v/, "").split(".").map((n) => parseInt(n || "0", 10));
+                          const cmp = (a: number[], b: number[]) => {
+                            for (let i = 0; i < Math.max(a.length, b.length); i++) {
+                              const x = a[i] || 0, y = b[i] || 0;
+                              if (x !== y) return x - y;
+                            }
+                            return 0;
+                          };
+                          const curParts = parseVer(curVer);
+                          const remoteParts = parseVer(remoteTag);
+                          const hasNew = remoteParts.length > 0 && cmp(remoteParts, curParts) > 0;
+                          if (hasNew) {
+                            setUpdateMsg(`发现新版本 v${remoteTag}，点击立即前往下载更新 →`);
+                            if (confirm(`检测到新版本 v${remoteTag}（当前版本：${curVer}）。\n\n是否立即前往 GitHub Releases 下载最新安装包？`)) {
+                              invoke("open_external_url", { url: htmlUrl });
+                            }
+                          } else {
+                            setUpdateMsg(`当前已是最新版本 (${curVer})，点击前往 Releases 下载 →`);
+                          }
                         } else {
-                          setUpdateMsg("当前已是最新版本");
+                          setUpdateMsg(`当前版本 ${curVer} · 点击前往 Releases 下载 →`);
                         }
                       } catch (_) {
-                        setUpdateMsg("当前已是最新版本");
+                        setUpdateMsg("检查更新失败，请检查网络代理");
                       } finally {
                         setCheckingUpdate(false);
                       }
@@ -3188,7 +3311,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.11 (Windows 测试版)
+                  当前版本：1.13.0.12 (Windows 测试版)
                 </div>
               </div>
             </div>
@@ -3230,6 +3353,131 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* UnifiedModelPicker 根模态层 (1:1 官方设计 + ⚡ 测活) */}
+      {showModelPicker && (
+        <UnifiedModelPicker
+          providers={providers}
+          modelGroupsState={modelGroupsState}
+          activeModel={activeModel}
+          activeProviderId={activeProviderId}
+          thinkingLevel={thinkingLevel}
+          onSelectModel={(pId, m) => {
+            setActiveProviderId(pId);
+            setActiveModel(m);
+            setShowModelPicker(false);
+          }}
+          onSelectGroup={group => {
+            setActiveModel(group.name);
+            if (group.fallback_models.length > 0) {
+              const firstM = group.fallback_models[0];
+              const owner = providers.find(p => p.models.includes(firstM));
+              if (owner) setActiveProviderId(owner.id);
+            }
+            setShowModelPicker(false);
+          }}
+          onSetThinkingLevel={lvl => setThinkingLevel(lvl)}
+          onOpenGroupManager={() => {
+            setShowModelPicker(false);
+            setSettingsView("model_groups");
+          }}
+          onOpenProviderManager={() => {
+            setShowModelPicker(false);
+            setSettingsView("providers");
+          }}
+          onClose={() => setShowModelPicker(false)}
+        />
+      )}
+
+      {/* 消息右键菜单 (1:1 原版截图 117dbaf09febb772242d9c62928d86b3_2351b6.jpg & 4826c2638c76199f03ccffea383ba686_fadaf7.jpg) */}
+      {messageContextMenu && (
+        <div
+          style={{
+            top: Math.min(messageContextMenu.y, window.innerHeight - 200),
+            left: Math.min(messageContextMenu.x, window.innerWidth - 180),
+          }}
+          className="fixed w-44 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none space-y-0.5"
+          onClick={e => e.stopPropagation()}
+        >
+          {messageContextMenu.turn.role === "user" ? (
+            <>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(messageContextMenu.turn.content);
+                  setMessageContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+              >
+                <Copy className="w-3.5 h-3.5 text-[#0A84FF]" />
+                <span>复制</span>
+              </button>
+              <button
+                onClick={() => handleRetryFromUserTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-[#34C759]" />
+                <span>重试</span>
+              </button>
+              <button
+                onClick={() => handleEditUserTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-[#FF9F0A]" />
+                <span>编辑</span>
+              </button>
+              <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
+              <button
+                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex)}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>从此处删除</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(messageContextMenu.turn.content);
+                  setMessageContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+              >
+                <Copy className="w-3.5 h-3.5 text-[#0A84FF]" />
+                <span>复制回答</span>
+              </button>
+              {messageContextMenu.turn.toolSteps.length > 0 && (
+                <button
+                  onClick={() => {
+                    const info = messageContextMenu.turn.toolSteps.map(t => `${t.label}\n${t.detail}`).join("\n\n---\n\n");
+                    navigator.clipboard.writeText(info);
+                    setMessageContextMenu(null);
+                  }}
+                  className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+                >
+                  <Terminal className="w-3.5 h-3.5 text-[#34C759]" />
+                  <span>拷贝工具信息</span>
+                </button>
+              )}
+              <button
+                onClick={() => handleRetryFromUserTurn(Math.max(0, messageContextMenu.turnIndex - 1), messageContextMenu.turn)}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-[#FF9F0A]" />
+                <span>从此处重新执行</span>
+              </button>
+              <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
+              <button
+                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex)}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>从此处删除</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* 会话右键上下文菜单 (对标 Hermes PC) */}
       {contextMenu && (
         <div

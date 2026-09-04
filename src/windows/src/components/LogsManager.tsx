@@ -87,14 +87,19 @@ export function LogsManager({ onClose }: LogsManagerProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!selectedFile) return;
-    const blob = new Blob([logContent], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = selectedFile.name;
-    a.click();
+    try {
+      const savedPath = await invoke<string>("export_log_file", {
+        name: selectedFile.name,
+        content: logContent,
+      });
+      alert(`日志文件已成功导出至：\n${savedPath}`);
+    } catch (err: any) {
+      if (!err.includes("取消")) {
+        alert(`导出失败: ${err}`);
+      }
+    }
   };
 
   return (

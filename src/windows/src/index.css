@@ -3,6 +3,39 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --accent-color: #0A84FF;
+}
+
+/* 全局应用 accent 强调色 */
+.bg-accent-theme {
+  background-color: var(--accent-color) !important;
+}
+
+.text-accent-theme {
+  color: var(--accent-color) !important;
+}
+
+.border-accent-theme {
+  border-color: var(--accent-color) !important;
+}
+
+/* 将全局硬编码的 iOS 蓝色主色调统一映射到用户选择的强调色 */
+.bg-\[\#007AFF\] { background-color: var(--accent-color) !important; }
+.bg-\[\#0A84FF\] { background-color: var(--accent-color) !important; }
+.bg-\[\#3478F6\] { background-color: var(--accent-color) !important; }
+.text-\[\#007AFF\] { color: var(--accent-color) !important; }
+.text-\[\#0A84FF\] { color: var(--accent-color) !important; }
+.text-\[\#3478F6\] { color: var(--accent-color) !important; }
+.border-\[\#007AFF\] { border-color: var(--accent-color) !important; }
+.border-\[\#0A84FF\] { border-color: var(--accent-color) !important; }
+.border-\[\#3478F6\] { border-color: var(--accent-color) !important; }
+.ring-\[\#007AFF\] { --tw-ring-color: var(--accent-color) !important; }
+.ring-\[\#0A84FF\] { --tw-ring-color: var(--accent-color) !important; }
+.ring-\[\#3478F6\] { --tw-ring-color: var(--accent-color) !important; }
+.accent-\[\#0A84FF\] { accent-color: var(--accent-color) !important; }
+.accent-\[\#007AFF\] { accent-color: var(--accent-color) !important; }
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

@@ -64,6 +64,13 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackModelTarget {
+    pub model: String,
+    pub provider_url: Option<String>,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub session_id: Option<String>,
     pub provider_id: Option<String>,
@@ -71,6 +78,8 @@ pub struct AgentConfig {
     pub api_key: String,
     pub model: String,
     pub fallback_models: Option<Vec<String>>, // 模型组回退队列
+    #[serde(default)]
+    pub fallback_targets: Option<Vec<FallbackModelTarget>>, // 带有专属凭证的多提供商回退队列
     pub system_prompt: Option<String>,
     pub thinking_level: Option<String>,      // "off" | "low" | "medium" | "high" | "max"
     pub thinking_budget: Option<u32>,
@@ -188,11 +197,35 @@ impl AgentEngine {
             history[0].content = full_sp;
         }
 
-        let mut candidate_models = vec![config.model.clone()];
+        let mut candidate_targets = Vec::new();
+        if !config.model.trim().is_empty() {
+            candidate_targets.push((
+                config.model.clone(),
+                config.provider_url.clone(),
+                config.api_key.clone(),
+            ));
+        }
+
+        if let Some(ref targets) = config.fallback_targets {
+            for t in targets {
+                if !candidate_targets.iter().any(|c| c.0 == t.model) && !t.model.trim().is_empty() {
+                    candidate_targets.push((
+                        t.model.clone(),
+                        t.provider_url.clone().unwrap_or_else(|| config.provider_url.clone()),
+                        t.api_key.clone().unwrap_or_else(|| config.api_key.clone()),
+                    ));
+                }
+            }
+        }
+
         if let Some(ref fallbacks) = config.fallback_models {
             for m in fallbacks {
-                if !candidate_models.contains(m) && !m.trim().is_empty() {
-                    candidate_models.push(m.clone());
+                if !candidate_targets.iter().any(|c| &c.0 == m) && !m.trim().is_empty() {
+                    candidate_targets.push((
+                        m.clone(),
+                        config.provider_url.clone(),
+                        config.api_key.clone(),
+                    ));
                 }
             }
         }
@@ -220,7 +253,7 @@ impl AgentEngine {
                 std::collections::HashMap::new();
             let mut turn_start_time = Instant::now();
 
-            for (idx, try_model) in candidate_models.iter().enumerate() {
+            for (idx, (try_model, try_url, try_key)) in candidate_targets.iter().enumerate() {
                 if self.abort_flag.load(Ordering::SeqCst) {
                     break;
                 }
@@ -232,13 +265,25 @@ impl AgentEngine {
                     });
                 }
 
+                let mut target_endpoint = try_url.trim().trim_end_matches('/').to_string();
+                if !target_endpoint.ends_with("/chat/completions") {
+                    if !target_endpoint.ends_with("/v1") && (target_endpoint.contains("openai.com") || target_endpoint.contains("siliconflow") || target_endpoint.contains("moonshot") || target_endpoint.contains("openrouter") || target_endpoint.contains("localhost:11434")) {
+                        target_endpoint.push_str("/v1");
+                    }
+                    target_endpoint.push_str("/chat/completions");
+                }
+
                 let mut request_map = serde_json::Map::new();
                 request_map.insert("model".to_string(), json!(try_model));
                 request_map.insert("messages".to_string(), json!(Self::format_history_for_llm(&history)));
                 request_map.insert("tools".to_string(), tools_schema.clone());
                 request_map.insert("stream".to_string(), json!(true));
                 request_map.insert("stream_options".to_string(), json!({ "include_usage": true }));
-                request_map.insert("temperature".to_string(), json!(0.7));
+
+                let is_o_series = try_model.starts_with("o1") || try_model.starts_with("o3") || try_model.contains("/o1") || try_model.contains("/o3");
+                if !is_o_series {
+                    request_map.insert("temperature".to_string(), json!(0.7));
+                }
 
                 let thinking_mode = config.thinking_level.as_deref().unwrap_or("high");
                 if thinking_mode != "off" {
@@ -247,21 +292,18 @@ impl AgentEngine {
                         "medium" => "medium",
                         _ => "high",
                     };
-                    request_map.insert("reasoning_effort".to_string(), json!(effort));
-                    request_map.insert("thinking".to_string(), json!({ "type": "enabled" }));
-
-                    let budget = config.thinking_budget.unwrap_or(match thinking_mode {
-                        "low" => 1024,
-                        "medium" => 4096,
-                        "max" => 16384,
-                        _ => 8192,
-                    });
-                    request_map.insert("extra_body".to_string(), json!({
-                        "enable_thinking": true,
-                        "thinking_budget": budget
-                    }));
-                } else {
-                    request_map.insert("thinking".to_string(), json!({ "type": "disabled" }));
+                    if is_o_series || try_model.contains("reason") || try_model.contains("r1") {
+                        request_map.insert("reasoning_effort".to_string(), json!(effort));
+                    }
+                    if target_endpoint.contains("anthropic") {
+                        let budget = config.thinking_budget.unwrap_or(match thinking_mode {
+                            "low" => 1024,
+                            "medium" => 4096,
+                            "max" => 16384,
+                            _ => 8192,
+                        });
+                        request_map.insert("thinking".to_string(), json!({ "type": "enabled", "budget_tokens": budget }));
+                    }
                 }
 
                 let request_body = Value::Object(request_map);
@@ -273,8 +315,8 @@ impl AgentEngine {
 
                 let send_res = self
                     .http_client
-                    .post(format!("{}/chat/completions", config.provider_url.trim_end_matches('/')))
-                    .header("Authorization", format!("Bearer {}", config.api_key))
+                    .post(&target_endpoint)
+                    .header("Authorization", format!("Bearer {}", try_key))
                     .header("Content-Type", "application/json")
                     .json(&request_body)
                     .send()
