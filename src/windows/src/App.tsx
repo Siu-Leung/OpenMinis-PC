@@ -64,9 +64,7 @@ import {
   Puzzle,
   HardDrive,
   Heart,
-  Volume2,
-  Send,
-  Mail
+  Volume2
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -2486,39 +2484,7 @@ export default function App() {
                       <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
                         <FileCode className="w-4 h-4" />
                       </div>
-                      <span className="text-sm font-semibold text-black dark:text-white">反馈问题 (GitHub Issues)</span>
-                    </div>
-                    <div className="flex items-center gap-1 text-[#8E8E93]">
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <ChevronRight className="w-4 h-4" />
-                    </div>
-                  </div>
-
-                  <div
-                    onClick={() => invoke("open_external_url", { url: "https://t.me/+2NzhOJuzRyI1YmM1" })}
-                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-[#34C759] flex items-center justify-center text-white">
-                        <Send className="w-4 h-4" />
-                      </div>
-                      <span className="text-sm font-semibold text-black dark:text-white">反馈 (Telegram)</span>
-                    </div>
-                    <div className="flex items-center gap-1 text-[#8E8E93]">
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <ChevronRight className="w-4 h-4" />
-                    </div>
-                  </div>
-
-                  <div
-                    onClick={() => invoke("open_external_url", { url: "mailto:dev@openminis.app?subject=Minis Feedback" })}
-                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-[#FF9500] flex items-center justify-center text-white">
-                        <Mail className="w-4 h-4" />
-                      </div>
-                      <span className="text-sm font-semibold text-black dark:text-white">反馈 (Email)</span>
+                      <span className="text-sm font-semibold text-black dark:text-white">反馈问题</span>
                     </div>
                     <div className="flex items-center gap-1 text-[#8E8E93]">
                       <ExternalLink className="w-3.5 h-3.5" />
