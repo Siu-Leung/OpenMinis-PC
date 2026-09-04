@@ -433,20 +433,20 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
         Ok(())
     }
 
-fn get_minis_home() -> std::path::PathBuf {
-    if let Ok(prof) = std::env::var("USERPROFILE") {
-        std::path::PathBuf::from(prof).join(".openminis")
-    } else if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home).join(".openminis")
-    } else {
-        std::path::PathBuf::from(r"C:\Users\Administrator\.openminis")
+    pub fn get_minis_home() -> std::path::PathBuf {
+        if let Ok(prof) = std::env::var("USERPROFILE") {
+            std::path::PathBuf::from(prof).join(".openminis")
+        } else if let Ok(home) = std::env::var("HOME") {
+            std::path::PathBuf::from(home).join(".openminis")
+        } else {
+            std::path::PathBuf::from(r"C:\Users\Administrator\.openminis")
+        }
     }
-}
 
     /// 在 Windows 文件资源管理器中打开沙箱目录
     pub fn open_in_explorer(&self, subpath: &str) -> Result<(), String> {
         let clean = subpath.trim_start_matches("/var/minis/").trim_start_matches('/');
-        let base_dir = get_minis_home();
+        let base_dir = Self::get_minis_home();
 
         let target_dir = if clean.is_empty() || clean == "shared" {
             base_dir.join("shared")
@@ -573,7 +573,7 @@ sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/reposi
 
     /// 在 Windows 资源管理器打开沙箱根文件系统
     pub fn open_rootfs_explorer(&self) -> Result<(), String> {
-        let base_dir = get_minis_home();
+        let base_dir = Self::get_minis_home();
         let _ = std::fs::create_dir_all(&base_dir);
 
         let unc_primary = format!(r"\\wsl$\{}", self.distro_name);
@@ -601,7 +601,7 @@ sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/reposi
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
         // 自动初始化与目录挂载
-        let base = get_minis_home();
+        let base = Self::get_minis_home();
         let shared = base.join("shared");
         let ws = base.join("workspace");
         let att = base.join("attachments");

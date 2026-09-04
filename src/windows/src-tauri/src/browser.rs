@@ -10,6 +10,7 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 #[cfg(target_os = "windows")]
+#[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

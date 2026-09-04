@@ -2,6 +2,7 @@
 //! 备注：私人用极度不稳定 Aicoding 改
 
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
