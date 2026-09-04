@@ -214,6 +214,12 @@ interface AttachmentItem {
   dataUrl: string;
 }
 
+interface EnvVarEntry {
+  key: string;
+  value: string;
+  note?: string;
+}
+
 const AVATAR_COLORS = [
   { bg: "bg-[#E1F5FE]", text: "text-[#0288D1]" },
   { bg: "bg-[#EDE7F6]", text: "text-[#5E35B1]" },
@@ -461,7 +467,7 @@ export default function App() {
 
   // 全功能设置模态窗口及其子页面路由
   const [settingsView, setSettingsView] = useState<
-    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about" | "appearance" | "skills" | "soul" | "mounts" | "logs" | "backup"
+    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about" | "appearance" | "skills" | "soul" | "mounts" | "logs" | "backup" | "env_vars"
   >("none");
 
   // 内置独立浏览器窗口状态
@@ -874,6 +880,7 @@ export default function App() {
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [soulConfig, setSoulConfig] = useState<SoulConfig>({ name: "Minis", instruction: "", active: true });
   const [mountedFolders, setMountedFolders] = useState<MountedFolderItem[]>([]);
+  const [envVars, setEnvVars] = useState<EnvVarEntry[]>([]);
   const handlePickFolder = async () => {
     try {
       const picked = await invoke<string | null>("pick_folder");
@@ -1118,6 +1125,24 @@ export default function App() {
       const res = await invoke<MountedFolderItem[]>("list_mounted_folders");
       setMountedFolders(res || []);
     } catch (e) {}
+  };
+
+  const loadEnvVars = async () => {
+    try {
+      const res = await invoke<EnvVarEntry[]>("list_env_vars");
+      setEnvVars(res || []);
+    } catch (e) {
+      console.error("加载环境变量失败:", e);
+    }
+  };
+
+  const saveEnvVars = async (entries: EnvVarEntry[]) => {
+    setEnvVars(entries);
+    try {
+      await invoke("save_env_vars", { entries });
+    } catch (e) {
+      console.error("保存环境变量失败:", e);
+    }
   };
 
   const loadMemories = async () => {
@@ -1996,30 +2021,8 @@ export default function App() {
                 )}
 
                 {streamingText && (
-                  <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5]">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                      components={{
-                        code({ inline, className, children, ...props }: any) {
-                          const match = /language-(\w+)/.exec(className || "");
-                          const codeText = String(children).replace(/\n$/, "");
-                          if (!inline && match) {
-                            return <CodeBlock language={match[1]} code={codeText} />;
-                          }
-                          return (
-                            <code className="bg-[#F2F2F7] dark:bg-[#34343A] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#FF9500] dark:text-[#FF9F0A]" {...props}>
-                              {children}
-                            </code>
-                          );
-                        },
-                        img({ src, alt, ...props }: any) {
-                          return <MarkdownImage src={src} alt={alt} {...props} />;
-                        }
-                      }}
-                    >
-                      {streamingText}
-                    </ReactMarkdown>
+                  <div className="text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5] whitespace-pre-wrap break-words">
+                    {streamingText}
                   </div>
                 )}
 
@@ -2344,6 +2347,25 @@ export default function App() {
                       <div>
                         <div className="text-sm font-semibold text-black dark:text-white">MCP 集成</div>
                         <div className="text-xs text-[#8E8E93]">连接 Model Context Protocol 服务器</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <div
+                    onClick={() => {
+                      loadEnvVars();
+                      setSettingsView("env_vars");
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#34C759] flex items-center justify-center text-white">
+                        <Terminal className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">环境变量</div>
+                        <div className="text-xs text-[#8E8E93]">注入沙箱 shell 的环境变量</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -3452,6 +3474,87 @@ export default function App() {
                   当前版本：1.13.0.14 (Windows 测试版)
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {settingsView === "env_vars" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold text-black dark:text-white">环境变量</h2>
+              </div>
+              <button
+                onClick={() => saveEnvVars([...envVars, { key: "", value: "" }])}
+                className="px-3 py-1.5 rounded-lg bg-[#007AFF] text-white text-xs font-semibold hover:opacity-90 transition"
+              >
+                + 添加
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              <p className="text-[11px] text-[#8E8E93] px-3 mb-2">
+                这些变量会在 Agent 执行沙箱 shell 命令时自动注入 (export KEY='VALUE')。
+              </p>
+
+              {envVars.length === 0 ? (
+                <div className="text-center py-12 text-xs text-[#8E8E93]">
+                  暂无环境变量，点击右上角「添加」创建
+                </div>
+              ) : (
+                envVars.map((ev, idx) => (
+                  <div key={idx} className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-3 border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="变量名 (如 OPENAI_API_KEY)"
+                        value={ev.key}
+                        onChange={e => {
+                          const next = [...envVars];
+                          next[idx] = { ...next[idx], key: e.target.value };
+                          setEnvVars(next);
+                        }}
+                        className="flex-1 bg-[#F2F2F7] dark:bg-[#2C2C2E] rounded-lg px-3 py-2 text-xs text-black dark:text-white outline-none font-mono"
+                      />
+                      <button
+                        onClick={() => saveEnvVars(envVars.filter((_, i) => i !== idx))}
+                        className="p-2 rounded-lg text-[#FF453A] hover:bg-[#FF453A]/10 transition"
+                        title="删除"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="变量值"
+                      value={ev.value}
+                      onChange={e => {
+                        const next = [...envVars];
+                        next[idx] = { ...next[idx], value: e.target.value };
+                        setEnvVars(next);
+                      }}
+                      className="w-full bg-[#F2F2F7] dark:bg-[#2C2C2E] rounded-lg px-3 py-2 text-xs text-black dark:text-white outline-none font-mono"
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-[#E5E5EA] dark:border-[#1C1C1E] bg-white dark:bg-[#1C1C1E]">
+              <button
+                onClick={() => {
+                  saveEnvVars(envVars.filter(ev => ev.key.trim() !== ""));
+                  setSettingsView("root");
+                }}
+                className="w-full py-2.5 rounded-xl bg-[#007AFF] text-white text-sm font-semibold hover:opacity-90 transition"
+              >
+                保存
+              </button>
             </div>
           </div>
         </div>

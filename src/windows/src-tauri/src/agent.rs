@@ -344,7 +344,7 @@ impl AgentEngine {
                     Ok(r) if r.status().is_success() => r,
                     Ok(err_resp) => {
                         let err_text = err_resp.text().await.unwrap_or_default();
-                        last_error_msg = format!("HTTP 错误: {}", err_text);
+                        last_error_msg = format!("HTTP {}: {}", err_resp.status().as_u16(), extract_llm_error(&err_text));
                         continue;
                     }
                     Err(e) => {
@@ -912,5 +912,39 @@ impl AgentEngine {
             out.push(Value::Object(obj));
         }
         out
+    }
+}
+
+/// 从 LLM 返回的原始错误 JSON 中提取友好的人类可读错误信息
+/// 处理 OpenAI/Anthropic/中转网关等常见错误格式, 提取 message 字段
+fn extract_llm_error(err_text: &str) -> String {
+    // 尝试解析 JSON 错误体, 提取 message / error.message 字段
+    if let Ok(val) = serde_json::from_str::<Value>(err_text) {
+        // 常见格式: {"error": {"message": "..."}}
+        if let Some(msg) = val.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+        // 格式: {"message": "..."}
+        if let Some(msg) = val.get("message").and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+        // 格式: {"error": "..."}
+        if let Some(msg) = val.get("error").and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+        // 格式: {"detail": "..."}
+        if let Some(msg) = val.get("detail").and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+    }
+
+    // 非 JSON: 截断原始文本, 避免超长错误刷屏
+    let trimmed = err_text.trim();
+    if trimmed.len() > 300 {
+        format!("{}...", &trimmed[..300])
+    } else if trimmed.is_empty() {
+        "未知错误".to_string()
+    } else {
+        trimmed.to_string()
     }
 }

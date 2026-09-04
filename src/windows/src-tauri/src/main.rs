@@ -7,6 +7,7 @@
 mod agent;
 mod backup;
 mod browser;
+mod env_vars;
 mod logs;
 mod mcp;
 mod memory;
@@ -24,6 +25,7 @@ mod usage;
 
 use agent::{AgentConfig, AgentEngine, ChatMessage};
 use browser::BrowserEngine;
+use env_vars::{EnvVarEntry, EnvVarManager};
 use mcp::{McpManager, McpServer};
 use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use model_groups::{FullModelGroupsState, ModelGroupManager};
@@ -55,6 +57,7 @@ struct AppState {
     skills: Arc<SkillsManager>,
     mounts: Arc<MountManager>,
     providers: Arc<ProviderManager>,
+    env_vars: Arc<EnvVarManager>,
 }
 
 // === 沙箱与 Agent 命令 ===
@@ -436,6 +439,18 @@ fn add_provider(state: State<'_, AppState>, provider: ProviderRecord) -> Result<
 #[tauri::command]
 fn remove_provider(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.providers.remove_provider(&id)
+}
+
+// === 环境变量管理 ===
+
+#[tauri::command]
+fn list_env_vars(state: State<'_, AppState>) -> Result<Vec<EnvVarEntry>, String> {
+    state.env_vars.list_env_vars()
+}
+
+#[tauri::command]
+fn save_env_vars(state: State<'_, AppState>, entries: Vec<EnvVarEntry>) -> Result<(), String> {
+    state.env_vars.save_env_vars(entries)
 }
 
 // === 模型组与用量 (对标原版) ===
@@ -965,7 +980,8 @@ fn main() {
     let skills = Arc::new(SkillsManager::new());
     let mounts = Arc::new(MountManager::new(sandbox.distro_name.clone()));
     let providers = Arc::new(ProviderManager::new());
-    let dispatcher = Arc::new(ToolDispatcher::new(sandbox.clone(), browser.clone(), memory.clone(), providers.clone()));
+    let env_vars = Arc::new(EnvVarManager::new());
+    let dispatcher = Arc::new(ToolDispatcher::new(sandbox.clone(), browser.clone(), memory.clone(), providers.clone(), env_vars.clone()));
     let agent = Arc::new(AgentEngine::new(
         dispatcher.clone(),
         usage.clone(),
@@ -995,6 +1011,7 @@ fn main() {
         skills,
         mounts,
         providers,
+        env_vars,
     };
 
     tauri::Builder::default()
@@ -1044,6 +1061,9 @@ fn main() {
             save_providers,
             add_provider,
             remove_provider,
+            // 环境变量管理
+            list_env_vars,
+            save_env_vars,
             // 模型组与用量 (对标原版)
             get_usage_dashboard,
             get_model_groups_state,

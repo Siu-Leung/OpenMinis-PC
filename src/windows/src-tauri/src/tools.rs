@@ -2,6 +2,7 @@
 //! 备注：Windows 测试版 (Experimental)
 
 use crate::browser::{BrowserActionParams, BrowserEngine};
+use crate::env_vars::EnvVarManager;
 use crate::memory::{MemoryCategory, MemoryStore};
 use crate::offloads::WindowsOffload;
 use crate::providers::{ProviderManager, ProviderRecord};
@@ -14,11 +15,12 @@ pub struct ToolDispatcher {
     pub browser: Arc<BrowserEngine>,
     pub memory: Arc<MemoryStore>,
     pub providers: Arc<ProviderManager>,
+    pub env_vars: Arc<EnvVarManager>,
 }
 
 impl ToolDispatcher {
-    pub fn new(sandbox: Arc<SandboxManager>, browser: Arc<BrowserEngine>, memory: Arc<MemoryStore>, providers: Arc<ProviderManager>) -> Self {
-        Self { sandbox, browser, memory, providers }
+    pub fn new(sandbox: Arc<SandboxManager>, browser: Arc<BrowserEngine>, memory: Arc<MemoryStore>, providers: Arc<ProviderManager>, env_vars: Arc<EnvVarManager>) -> Self {
+        Self { sandbox, browser, memory, providers, env_vars }
     }
 
     /// 分发执行 LLM 的 Tool Call
@@ -28,7 +30,11 @@ impl ToolDispatcher {
                 let cmd = arguments.get("command").and_then(|v| v.as_str()).unwrap_or("");
                 let timeout_secs = arguments.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
 
-                match self.sandbox.execute_shell(cmd, timeout_secs).await {
+                // 注入用户配置的环境变量前缀 (export KEY='VALUE'; ...)
+                let inject = self.env_vars.build_inject_prefix();
+                let full_cmd = format!("{}{}", inject, cmd);
+
+                match self.sandbox.execute_shell(&full_cmd, timeout_secs).await {
                     Ok(res) => json!({
                         "exit_code": res.exit_code,
                         "stdout": res.stdout,
