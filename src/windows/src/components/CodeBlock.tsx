@@ -46,9 +46,9 @@ export function CodeBlock({ language, code }: CodeBlockProps) {
   const isRunnable = ["PYTHON", "PY", "BASH", "SH", "SHELL"].includes(cleanLang);
 
   return (
-    <div className="my-3 rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#2C2C2E] bg-[#141416] text-[#F4F4F5] text-xs font-mono shadow-md">
+    <div className="my-3 rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#38383A] bg-[#000000] dark:bg-[#262626] text-[#34C759] dark:text-[#8CF38C] text-xs font-mono shadow-md">
       {/* 顶栏信息 */}
-      <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#1C1C1E] border-b border-[#2C2C2E] text-[11px] text-[#A1A1AA] select-none">
+      <div className="flex items-center justify-between px-3.5 py-1.5 bg-[#F2F2F7] dark:bg-[#1C1C1E] border-b border-[#E5E5EA] dark:border-[#38383A] text-[11px] text-[#8E8E93] select-none">
         <span className="font-semibold tracking-wider text-[#A1A1AA]">{cleanLang}</span>
         <div className="flex items-center gap-1.5">
           {isRunnable && (

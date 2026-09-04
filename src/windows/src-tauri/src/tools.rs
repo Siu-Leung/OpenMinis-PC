@@ -4,6 +4,7 @@
 use crate::browser::{BrowserActionParams, BrowserEngine};
 use crate::memory::{MemoryCategory, MemoryStore};
 use crate::offloads::WindowsOffload;
+use crate::providers::{ProviderManager, ProviderRecord};
 use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -12,11 +13,12 @@ pub struct ToolDispatcher {
     pub sandbox: Arc<SandboxManager>,
     pub browser: Arc<BrowserEngine>,
     pub memory: Arc<MemoryStore>,
+    pub providers: Arc<ProviderManager>,
 }
 
 impl ToolDispatcher {
-    pub fn new(sandbox: Arc<SandboxManager>, browser: Arc<BrowserEngine>, memory: Arc<MemoryStore>) -> Self {
-        Self { sandbox, browser, memory }
+    pub fn new(sandbox: Arc<SandboxManager>, browser: Arc<BrowserEngine>, memory: Arc<MemoryStore>, providers: Arc<ProviderManager>) -> Self {
+        Self { sandbox, browser, memory, providers }
     }
 
     /// 分发执行 LLM 的 Tool Call
@@ -211,6 +213,61 @@ impl ToolDispatcher {
                     json!({ "opened": target })
                 } else {
                     json!({ "error": "win_open 仅支持安全打开以 http:// 或 https:// 开头的网络链接" })
+                }
+            }
+
+            // --- 供应商管理 (Agent 可读写) ---
+            "list_providers" => {
+                match self.providers.list_provider_summaries() {
+                    Ok(summaries) => json!({
+                        "success": true,
+                        "providers": summaries,
+                        "count": summaries.len(),
+                    }),
+                    Err(e) => json!({ "error": e }),
+                }
+            }
+
+            "add_provider" => {
+                let name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let provider_url = arguments.get("provider_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let api_key = arguments.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let models = arguments
+                    .get("models")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|m| m.as_str().map(|s| s.to_string())).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let auto_append_v1 = arguments.get("auto_append_v1").and_then(|v| v.as_bool());
+
+                if name.trim().is_empty() {
+                    return json!({ "error": "供应商名称不能为空" });
+                }
+                if provider_url.trim().is_empty() {
+                    return json!({ "error": "供应商 API 地址不能为空" });
+                }
+
+                let record = ProviderRecord {
+                    id: String::new(),
+                    name,
+                    provider_url,
+                    api_key,
+                    models,
+                    provider_type: None,
+                    auto_append_v1,
+                    custom_user_agent: None,
+                    api_format: None,
+                    is_azure: None,
+                    image_generation: None,
+                    latency_ms: None,
+                };
+
+                match self.providers.add_provider(record) {
+                    Ok(saved) => json!({
+                        "success": true,
+                        "provider": saved.to_summary(),
+                        "message": "供应商已添加",
+                    }),
+                    Err(e) => json!({ "error": e }),
                 }
             }
 

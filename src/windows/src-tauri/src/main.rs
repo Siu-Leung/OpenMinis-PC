@@ -13,6 +13,7 @@ mod memory;
 mod model_groups;
 mod mounts;
 mod offloads;
+mod providers;
 mod sandbox;
 mod scheduler;
 mod session;
@@ -28,6 +29,7 @@ use memory::{MemoryCategory, MemoryEntry, MemoryStore};
 use model_groups::{FullModelGroupsState, ModelGroupManager};
 use mounts::{MountManager, MountedFolderItem};
 use offloads::WindowsOffload;
+use providers::{ProviderManager, ProviderRecord, ProviderSummary};
 use sandbox::SandboxManager;
 use scheduler::{CronScheduler, ScheduledTask};
 use serde::{Deserialize, Serialize};
@@ -52,6 +54,7 @@ struct AppState {
     soul: Arc<SoulManager>,
     skills: Arc<SkillsManager>,
     mounts: Arc<MountManager>,
+    providers: Arc<ProviderManager>,
 }
 
 // === 沙箱与 Agent 命令 ===
@@ -411,6 +414,28 @@ async fn fetch_provider_models(
     }
 
     Ok(models)
+}
+
+// === 供应商管理 (后端统一存储, 供前端加载 + Agent 工具读写) ===
+
+#[tauri::command]
+fn list_providers(state: State<'_, AppState>) -> Result<Vec<ProviderRecord>, String> {
+    state.providers.list_providers()
+}
+
+#[tauri::command]
+fn save_providers(state: State<'_, AppState>, providers: Vec<ProviderRecord>) -> Result<(), String> {
+    state.providers.save_providers(providers)
+}
+
+#[tauri::command]
+fn add_provider(state: State<'_, AppState>, provider: ProviderRecord) -> Result<ProviderRecord, String> {
+    state.providers.add_provider(provider)
+}
+
+#[tauri::command]
+fn remove_provider(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.providers.remove_provider(&id)
 }
 
 // === 模型组与用量 (对标原版) ===
@@ -939,7 +964,7 @@ fn main() {
     let soul = Arc::new(SoulManager::new());
     let skills = Arc::new(SkillsManager::new());
     let mounts = Arc::new(MountManager::new(sandbox.distro_name.clone()));
-    let dispatcher = Arc::new(ToolDispatcher::new(sandbox.clone(), browser.clone(), memory.clone()));
+    let dispatcher = Arc::new(ToolDispatcher::new(sandbox.clone(), browser.clone(), memory.clone(), providers.clone()));
     let agent = Arc::new(AgentEngine::new(
         dispatcher.clone(),
         usage.clone(),
@@ -951,6 +976,7 @@ fn main() {
     let sessions = Arc::new(SessionStore::new());
     let scheduler = Arc::new(CronScheduler::new());
     let mcp = Arc::new(McpManager::new());
+    let providers = Arc::new(ProviderManager::new());
     let _ = memory.ensure_global_exists();
 
     let cron_scheduler_clone = scheduler.clone();
@@ -968,6 +994,7 @@ fn main() {
         soul,
         skills,
         mounts,
+        providers,
     };
 
     tauri::Builder::default()
@@ -1012,6 +1039,11 @@ fn main() {
             get_app_version,
             launch_installer_terminal,
             fetch_provider_models,
+            // 供应商管理
+            list_providers,
+            save_providers,
+            add_provider,
+            remove_provider,
             // 模型组与用量 (对标原版)
             get_usage_dashboard,
             get_model_groups_state,

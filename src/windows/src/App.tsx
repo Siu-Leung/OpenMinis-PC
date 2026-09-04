@@ -476,7 +476,7 @@ export default function App() {
     headlessDefault: true,
   });
 
-  // 供应商状态
+  // 供应商状态 (后端统一存储, localStorage 仅作迁移源与缓存兜底)
   const [providers, setProviders] = useState<Provider[]>(() => {
     const saved = localStorage.getItem("openminis_providers_v4_clean");
     return saved ? JSON.parse(saved) : [];
@@ -954,6 +954,7 @@ export default function App() {
     loadSkills();
     loadSoul();
     loadMounts();
+    loadProviders();
   }, []);
 
   // 监听 Agent 流式事件
@@ -1140,6 +1141,28 @@ export default function App() {
   const saveProviders = (newProviders: Provider[]) => {
     setProviders(newProviders);
     localStorage.setItem("openminis_providers_v4_clean", JSON.stringify(newProviders));
+    // 同步到后端统一存储 (供 Agent 工具读写)
+    invoke("save_providers", { providers: newProviders }).catch(() => {});
+  };
+
+  // 从后端加载供应商, 并迁移 localStorage 旧数据
+  const loadProviders = async () => {
+    try {
+      const backend = await invoke<Provider[]>("list_providers");
+      if (backend && backend.length > 0) {
+        // 后端已有数据, 以后端为准
+        setProviders(backend);
+        localStorage.setItem("openminis_providers_v4_clean", JSON.stringify(backend));
+      } else {
+        // 后端为空, 迁移 localStorage 旧数据到后端
+        const local = JSON.parse(localStorage.getItem("openminis_providers_v4_clean") || "[]");
+        if (local.length > 0) {
+          await invoke("save_providers", { providers: local });
+        }
+      }
+    } catch (e) {
+      console.error("加载后端供应商失败:", e);
+    }
   };
 
   const handleStartAutoInit = async () => {
@@ -1808,7 +1831,7 @@ export default function App() {
                       </div>
                     )}
 
-                    <div className="bg-[#E5E5EA] dark:bg-[#1C1C1E] text-[#000000] dark:text-[#FFFFFF] rounded-[22px] rounded-br-[6px] px-4 py-2.5 max-w-[80%] text-[15px] leading-relaxed shadow-sm">
+                    <div className="bg-[#1E787880] dark:bg-[#2F3A5C] text-[#000000] dark:text-[#FFFFFF] rounded-[22px] rounded-br-[6px] px-4 py-2.5 max-w-[80%] text-[15px] leading-relaxed shadow-sm">
                       {turn.content}
                     </div>
                   </div>
@@ -1911,7 +1934,7 @@ export default function App() {
                               return <CodeBlock language={match[1]} code={codeText} />;
                             }
                             return (
-                              <code className="bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#D1D1D6]" {...props}>
+                              <code className="bg-[#F2F2F7] dark:bg-[#34343A] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#FF9500] dark:text-[#FF9F0A]" {...props}>
                                 {children}
                               </code>
                             );
@@ -1985,7 +2008,7 @@ export default function App() {
                             return <CodeBlock language={match[1]} code={codeText} />;
                           }
                           return (
-                            <code className="bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#D1D1D6]" {...props}>
+                            <code className="bg-[#F2F2F7] dark:bg-[#34343A] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#FF9500] dark:text-[#FF9F0A]" {...props}>
                               {children}
                             </code>
                           );

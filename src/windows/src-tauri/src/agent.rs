@@ -826,6 +826,35 @@ impl AgentEngine {
                         "properties": {}
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_providers",
+                    "description": "查询已添加的 AI 供应商列表（名称、API 地址、模型，不含 API Key）",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_provider",
+                    "description": "添加一个新的 AI 供应商（OpenAI 兼容接口），含名称、API 地址、API Key 与模型列表",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "供应商显示名称，如 \"DeepSeek\"" },
+                            "provider_url": { "type": "string", "description": "API 基础地址，如 https://api.deepseek.com 或 https://api.openai.com/v1" },
+                            "api_key": { "type": "string", "description": "API 密钥" },
+                            "models": { "type": "array", "items": { "type": "string" }, "description": "模型 ID 列表，如 [\"deepseek-chat\", \"deepseek-reasoner\"]" },
+                            "auto_append_v1": { "type": "boolean", "description": "是否自动追加 /v1 后缀（默认 true）" }
+                        },
+                        "required": ["name", "provider_url", "api_key"]
+                    }
+                }
             }
         ])
     }
