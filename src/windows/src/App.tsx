@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ProviderManager } from "./components/ProviderManager";
-import { ModelGroupManager } from "./components/ModelGroupManager";
+import { ModelGroupManager, ModelGroupItem, FullModelGroupsState, DefaultsConfig, AgentLoopModelEntry } from "./components/ModelGroupManager";
+import { LogsManager } from "./components/LogsManager";
+import { BackupRestoreManager } from "./components/BackupRestoreManager";
+import { UnifiedModelPicker } from "./components/UnifiedModelPicker";
+import { MinisComputer, MinisComputerState } from "./components/MinisComputer";
 import { MarkdownImage } from "./components/MarkdownImage";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -11,9 +15,12 @@ import {
   Edit3,
   Download,
   FileUp,
+  Archive,
   Plus,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
+  Zap,
   ArrowUp,
   Settings as SettingsIcon,
   Search,
@@ -149,34 +156,7 @@ interface TotalUsageDashboard {
   model_rankings: ModelUsageSummary[];
 }
 
-interface ModelGroupItem {
-  id: string;
-  name: string;
-  is_primary: boolean;
-  fallback_models: string[];
-  description?: string;
-}
 
-interface DefaultsConfig {
-  default_primary_group: string;
-  default_sub_model: string;
-  voice_input: string;
-  voice_output: string;
-  vision_input: string;
-}
-
-interface AgentLoopModelEntry {
-  id: string;
-  name: string;
-  is_group: boolean;
-  model_count: number;
-}
-
-interface FullModelGroupsState {
-  groups: ModelGroupItem[];
-  defaults: DefaultsConfig;
-  agent_loop_models: AgentLoopModelEntry[];
-}
 
 interface SandboxDiagnostics {
   isInstalled: boolean;
@@ -241,6 +221,81 @@ const ROTATING_PLACEHOLDERS = [
   "分析 /var/minis/workspace 中的数据并制表...",
   "开启高强度深度思考推演复杂任务...",
 ];
+
+export interface ChatTurn {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  images?: string[];
+  thinking?: string;
+  thinking_duration?: number;
+  toolSteps: {
+    name: string;
+    label: string;
+    icon: any;
+    color: string;
+    detail: string;
+    content: string;
+  }[];
+}
+
+function aggregateMessagesIntoTurns(messages: ChatMessage[]): ChatTurn[] {
+  const turns: ChatTurn[] = [];
+  let currentAssistantTurn: ChatTurn | null = null;
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "system") continue;
+
+    if (m.role === "user") {
+      if (currentAssistantTurn) {
+        turns.push(currentAssistantTurn);
+        currentAssistantTurn = null;
+      }
+      turns.push({
+        id: `turn-user-${i}`,
+        role: "user",
+        content: m.content,
+        images: m.images,
+        toolSteps: [],
+      });
+    } else if (m.role === "tool") {
+      if (!currentAssistantTurn) {
+        currentAssistantTurn = {
+          id: `turn-asst-${i}`,
+          role: "assistant",
+          content: "",
+          toolSteps: [],
+        };
+      }
+      const info = getToolDisplayInfo(m.content);
+      currentAssistantTurn.toolSteps.push(info);
+    } else if (m.role === "assistant") {
+      if (!currentAssistantTurn) {
+        currentAssistantTurn = {
+          id: `turn-asst-${i}`,
+          role: "assistant",
+          content: m.content || "",
+          thinking: m.thinking,
+          thinking_duration: m.thinking_duration,
+          toolSteps: [],
+        };
+      } else {
+        if (m.thinking) currentAssistantTurn.thinking = m.thinking;
+        if (m.thinking_duration) currentAssistantTurn.thinking_duration = m.thinking_duration;
+        if (m.content && m.content.trim()) {
+          currentAssistantTurn.content = m.content;
+        }
+      }
+    }
+  }
+
+  if (currentAssistantTurn) {
+    turns.push(currentAssistantTurn);
+  }
+
+  return turns;
+}
 
 function getToolDisplayInfo(content: string) {
   try {
@@ -369,7 +424,7 @@ export default function App() {
 
   // 全功能设置模态窗口及其子页面路由
   const [settingsView, setSettingsView] = useState<
-    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about" | "appearance" | "skills" | "soul" | "mounts"
+    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about" | "appearance" | "skills" | "soul" | "mounts" | "logs" | "backup"
   >("none");
 
   // 内置独立浏览器窗口状态
@@ -393,7 +448,15 @@ export default function App() {
     return localStorage.getItem("openminis_active_provider_id_v4") || "";
   });
   const [activeModel, setActiveModel] = useState<string>(() => {
-    return localStorage.getItem("openminis_active_model_v4") || "";
+    const saved = localStorage.getItem("openminis_active_model_v4");
+    if (saved) return saved;
+    try {
+      const savedProviders: Provider[] = JSON.parse(localStorage.getItem("openminis_providers_v4_clean") || "[]");
+      if (savedProviders.length > 0 && savedProviders[0].models.length > 0) {
+        return savedProviders[0].models[0];
+      }
+    } catch {}
+    return "deepseek-chat";
   });
   const [thinkingLevel, setThinkingLevel] = useState<string>(() => {
     return localStorage.getItem("openminis_thinking_level") || "high";
@@ -437,6 +500,17 @@ export default function App() {
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState<string>("");
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
+  // Minis Computer 实时画中画小电脑状态
+  const [computerState, setComputerState] = useState<MinisComputerState>({
+    isActive: false,
+    toolType: "other",
+    title: "",
+    commandOrUrl: "",
+  });
+
+  // 工具步骤折叠状态 (Turn 级)
+  const [expandedToolTurns, setExpandedToolTurns] = useState<{ [turnId: string]: boolean }>({});
+
 
   // 拖拽文件状态 (Drag & Drop)
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -516,7 +590,7 @@ export default function App() {
       loadSessions();
       if (currentSessionId === id) {
         setCurrentSessionId(null);
-        setMessages([{ role: "assistant", content: "已开启新会话。请随时下达任务！" }]);
+        setMessages([]);
       }
     }
   };
@@ -558,11 +632,16 @@ export default function App() {
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingFile(false);
+    setIsDraggingOver(false);
 
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
     for (const file of files) {
+      if (file.type.startsWith("image/")) {
+        processFile(file);
+      }
+
       const reader = new FileReader();
       reader.onload = async () => {
         const base64Data = reader.result as string;
@@ -574,7 +653,9 @@ export default function App() {
             isMedia,
           });
           const targetPath = isMedia ? `/var/minis/attachments/${file.name}` : `/var/minis/workspace/${file.name}`;
-          setInput(prev => prev ? `${prev}\n[已附加文件: ${targetPath}]` : `请分析该文件：${targetPath}`);
+          if (!file.type.startsWith("image/")) {
+            setInput(prev => prev ? `${prev}\n[已附加文件: ${targetPath}]` : `请分析该文件：${targetPath}`);
+          }
         } catch (err) {
           console.error("上传附件失败:", err);
           alert(`上传文件 ${file.name} 失败: ${err}`);
@@ -585,12 +666,7 @@ export default function App() {
   };
 
   // 对话流状态
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      content: "你好，我是 **Minis**。\n\n运行于独立的 Alpine Linux 沙箱环境。支持多供应商管理、模型组自动回退、深度思考模式与真机浏览器自动化。随时提出任务！"
-    }
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [agentStatus, setAgentStatus] = useState<string>("idle");
@@ -1022,7 +1098,7 @@ export default function App() {
   const sessionGroups = groupSessionsByDate(unpinnedSessions);
 
   return (
-    <div className={`flex h-screen w-screen overflow-hidden select-none font-sans ${oledMode ? "bg-[#000000]" : "bg-[#F2F2F7] dark:bg-[#000000]"} text-[#1C1C1E] dark:text-[#F2F2F7]`}>
+    <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} className={`flex h-screen w-screen overflow-hidden select-none font-sans ${oledMode ? "bg-[#000000]" : "bg-[#F2F2F7] dark:bg-[#000000]"} text-[#1C1C1E] dark:text-[#F2F2F7]`}>
       {/* =========================================================================
           1. 会话主列表 (智能时间分段 + 搜索 + 1:1 原版质感)
       ========================================================================= */}
@@ -1237,7 +1313,7 @@ export default function App() {
           <div className="p-3 border-t border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between">
             <button
               onClick={() => {
-                setMessages([{ role: "assistant", content: "已开启新会话。请随时下达任务！" }]);
+                setMessages([]);
                 setCurrentSessionId(null);
                 setInput("");
               }}
@@ -1291,7 +1367,11 @@ export default function App() {
               onClick={() => setShowModelPicker(!showModelPicker)}
               className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-semibold text-[#1C1C1E] dark:text-[#FFFFFF] transition hover:border-[#0A84FF]/50"
             >
-              {currentProvider && (
+              {modelGroupsState.groups.some(g => g.name === activeModel) ? (
+                <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#AF52DE]/15 text-[#AF52DE] font-bold shrink-0">
+                  分组
+                </span>
+              ) : currentProvider && (
                 <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#0A84FF]/10 text-[#0A84FF] font-bold shrink-0">
                   {currentProvider.name}
                 </span>
@@ -1300,93 +1380,39 @@ export default function App() {
               <ChevronDown className="w-3.5 h-3.5 text-[#8E8E93]" />
             </button>
 
-            {/* 模型选择弹窗 (按提供商清晰分组) */}
+            {/* UnifiedModelPicker 模型选择器 (1:1 官方设计 + ⚡ 测活) */}
             {showModelPicker && (
-              <div className="absolute top-10 left-1/2 -translate-x-1/2 w-80 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none">
-                <div className="pb-2.5 border-b border-[#E5E5EA] dark:border-[#2C2C2E] mb-2 space-y-1.5">
-                  <div className="text-[11px] font-semibold text-[#8E8E93] flex items-center gap-1.5">
-                    <Sliders className="w-3.5 h-3.5 text-[#0A84FF]" />
-                    <span>思考模式强度 (Reasoning Effort)</span>
-                  </div>
-                  <div className="flex rounded-xl bg-[#F2F2F7] dark:bg-[#141416] p-1 border border-[#E5E5EA] dark:border-[#2C2C2E] text-[11px]">
-                    {["off", "low", "medium", "high"].map(lvl => (
-                      <button
-                        key={lvl}
-                        onClick={() => setThinkingLevel(lvl)}
-                        className={`flex-1 py-1 rounded-lg uppercase font-semibold transition ${
-                          thinkingLevel === lvl ? "bg-[#0A84FF] text-white shadow-sm" : "text-[#8E8E93] hover:text-white"
-                        }`}
-                      >
-                        {lvl === "off" ? "关闭" : lvl}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="text-[11px] font-semibold text-[#8E8E93] mb-1">可用模型池</div>
-                <div className="max-h-64 overflow-y-auto space-y-3 p-1">
-                  {providers.length === 0 ? (
-                    <div className="text-center py-6 text-xs text-[#8E8E93] space-y-2">
-                      <div>暂无可用模型</div>
-                      <button
-                        onClick={() => { setShowModelPicker(false); setSettingsView("providers"); }}
-                        className="text-[#0A84FF] hover:underline font-semibold"
-                      >
-                        前往设置 → 添加 AI 服务商
-                      </button>
-                    </div>
-                  ) : (
-                    providers.map(p => (
-                      <div key={p.id} className="space-y-1">
-                        <div className="flex items-center justify-between px-2 text-[10px] font-bold text-[#8E8E93] uppercase tracking-wider">
-                          <span className="flex items-center gap-1.5">
-                            <span className={`w-1.5 h-1.5 rounded-full ${p.api_key ? "bg-[#34C759]" : "bg-[#8E8E93]"}`} />
-                            {p.name}
-                          </span>
-                          <span>{p.models.length} 个模型</span>
-                        </div>
-                        <div className="space-y-0.5">
-                          {p.models.length === 0 ? (
-                            <div className="text-[11px] text-[#8E8E93] px-3 py-1 italic">未配置模型</div>
-                          ) : (
-                            p.models.map(m => {
-                              const isSelected = activeProviderId === p.id && activeModel === m;
-                              return (
-                                <button
-                                  key={m}
-                                  onClick={() => {
-                                    setActiveProviderId(p.id);
-                                    setActiveModel(m);
-                                    setShowModelPicker(false);
-                                  }}
-                                  className={`w-full text-left px-3 py-1.5 rounded-xl text-xs truncate transition flex items-center justify-between ${
-                                    isSelected
-                                      ? "bg-[#0A84FF] text-white font-semibold shadow-sm"
-                                      : "text-[#1C1C1E] dark:text-[#E5E5EA] hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]"
-                                  }`}
-                                >
-                                  <span className="truncate">{m}</span>
-                                  {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
-                                </button>
-                              );
-                            })
-                          )}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="pt-2 border-t border-[#E5E5EA] dark:border-[#2C2C2E] mt-2">
-                  <button
-                    onClick={() => { setShowModelPicker(false); setSettingsView("providers"); }}
-                    className="w-full py-1.5 rounded-xl text-center text-xs text-[#0A84FF] font-semibold hover:bg-[#0A84FF]/10 transition flex items-center justify-center gap-1"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>管理 AI 服务商</span>
-                  </button>
-                </div>
-              </div>
+              <UnifiedModelPicker
+                providers={providers}
+                modelGroupsState={modelGroupsState}
+                activeModel={activeModel}
+                activeProviderId={activeProviderId}
+                thinkingLevel={thinkingLevel}
+                onSelectModel={(pId, m) => {
+                  setActiveProviderId(pId);
+                  setActiveModel(m);
+                  setShowModelPicker(false);
+                }}
+                onSelectGroup={group => {
+                  setActiveModel(group.name);
+                  if (group.fallback_models.length > 0) {
+                    const firstM = group.fallback_models[0];
+                    const owner = providers.find(p => p.models.includes(firstM));
+                    if (owner) setActiveProviderId(owner.id);
+                  }
+                  setShowModelPicker(false);
+                }}
+                onSetThinkingLevel={lvl => setThinkingLevel(lvl)}
+                onOpenGroupManager={() => {
+                  setShowModelPicker(false);
+                  setSettingsView("model_groups");
+                }}
+                onOpenProviderManager={() => {
+                  setShowModelPicker(false);
+                  setSettingsView("providers");
+                }}
+                onClose={() => setShowModelPicker(false)}
+              />
             )}
           </div>
 
@@ -1394,7 +1420,7 @@ export default function App() {
           <div className="flex items-center gap-1.5 relative">
             <button
               onClick={() => {
-                setMessages([{ role: "assistant", content: "已开启新对话。请随时下达任务！" }]);
+                setMessages([]);
                 setCurrentSessionId(null);
                 setInput("");
               }}
@@ -1418,7 +1444,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     setShowTopMenu(false);
-                    setMessages([{ role: "assistant", content: "已开启新对话。请随时下达任务！" }]);
+                    setMessages([]);
                     setCurrentSessionId(null);
                     setInput("");
                   }}
@@ -1563,127 +1589,169 @@ export default function App() {
         {/* 消息滚动流 */}
         <div className="flex-1 overflow-y-auto px-4 py-6">
           <div className="max-w-3xl mx-auto space-y-6">
-            {messages.map((msg, i) => {
-              if (msg.role === "system") return null;
+            {(() => {
+            const turns = aggregateMessagesIntoTurns(messages);
 
-              if (msg.role === "tool") {
-                const info = getToolDisplayInfo(msg.content);
-                const IconComponent = info.icon;
-
+            return turns.map((turn, turnIdx) => {
+              if (turn.role === "user") {
                 return (
-                  <div key={i} className="my-2 select-none">
-                    <div
-                      onClick={() => setSelectedToolDetail(info)}
-                      className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] hover:border-[#0A84FF]/60 text-xs text-[#8E8E93] cursor-pointer transition shadow-sm hover:scale-[1.01]"
-                      title="点击查看执行详情"
-                    >
-                      <IconComponent className={`w-3.5 h-3.5 ${info.color}`} />
-                      <span className="font-mono text-[11px] text-[#1C1C1E] dark:text-[#D1D1D6]">{info.label}</span>
-                      <span className="text-[10px] text-[#8E8E93] bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded-full">查看</span>
-                    </div>
-                  </div>
-                );
-              }
-
-              if (msg.role === "user") {
-                return (
-                  <div key={i} className="flex flex-col items-end space-y-2">
-                    {msg.images && msg.images.length > 0 && (
+                  <div key={turn.id} className="flex flex-col items-end space-y-2">
+                    {turn.images && turn.images.length > 0 && (
                       <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
-                        {msg.images.map((img, idx) => (
+                        {turn.images.map((img, idx) => (
                           <img key={idx} src={img} alt="upload" className="max-h-56 max-w-sm rounded-2xl border border-[#2C2C2E] object-cover shadow-sm" />
                         ))}
                       </div>
                     )}
 
                     <div className="bg-[#E5E5EA] dark:bg-[#1C1C1E] text-[#000000] dark:text-[#FFFFFF] rounded-[22px] rounded-br-[6px] px-4 py-2.5 max-w-[80%] text-[15px] leading-relaxed shadow-sm">
-                      {msg.content}
+                      {turn.content}
                     </div>
                   </div>
                 );
               }
 
-              // Assistant 消息
-              const isExpandedThink = !!expandedThinking[i];
+              // Assistant Turn (Turn-Level Aggregation 终极整合版)
+              const isExpandedThink = !!expandedThinking[turnIdx];
+              const isExpandedTools = !!expandedToolTurns[turn.id];
+
               return (
-                <div key={i} className="flex flex-col space-y-2 text-[#000000] dark:text-[#E4E4E7]">
-                  {/* 1:1 对标原版 ThinkingBlockView */}
-                  {msg.thinking && (
-                    <div className="mb-2 max-w-2xl select-none">
+                <div key={turn.id} className="flex flex-col space-y-2 text-[#000000] dark:text-[#E4E4E7]">
+                  {/* 1. 深度思考折叠条 */}
+                  {turn.thinking && (
+                    <div className="mb-1 max-w-2xl select-none">
                       <div
-                        onClick={() => setExpandedThinking(prev => ({ ...prev, [i]: !prev[i] }))}
+                        onClick={() => setExpandedThinking(prev => ({ ...prev, [turnIdx]: !prev[turnIdx] }))}
                         className="inline-flex items-center gap-1.5 text-xs text-[#0A84FF] cursor-pointer hover:opacity-80 py-1 transition font-semibold"
                       >
                         <Brain className="w-4 h-4 text-[#0A84FF]" />
                         <span>深度思考</span>
-                        {msg.thinking_duration && (
-                          <span className="text-[11px] text-[#8E8E93] font-normal">({msg.thinking_duration.toFixed(1)}s)</span>
+                        {turn.thinking_duration && (
+                          <span className="text-[11px] text-[#8E8E93] font-normal">({turn.thinking_duration.toFixed(1)}s)</span>
                         )}
                         {isExpandedThink ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                       </div>
 
                       {isExpandedThink && (
                         <div className="mt-1 pl-3 py-1 border-l-2 border-[#0A84FF]/40 text-xs text-[#8E8E93] whitespace-pre-wrap leading-relaxed font-sans bg-[#F2F2F7]/50 dark:bg-[#1C1C1E]/30 rounded-r-xl p-2.5">
-                          {msg.thinking}
+                          {turn.thinking}
                         </div>
                       )}
                     </div>
                   )}
 
-                  {/* Markdown 正文内容 (支持 KaTeX LaTeX 数学公式、图片/快照与可运行代码块) */}
-                  <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5]">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                      components={{
-                        code({ inline, className, children, ...props }: any) {
-                          const match = /language-(\w+)/.exec(className || "");
-                          const codeText = String(children).replace(/\n$/, "");
-                          if (!inline && match) {
-                            return <CodeBlock language={match[1]} code={codeText} />;
-                          }
-                          return (
-                            <code className="bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#D1D1D6]" {...props}>
-                              {children}
-                            </code>
-                          );
-                        },
-                        img({ src, alt, ...props }: any) {
-                          return <MarkdownImage src={src} alt={alt} {...props} />;
-                        }
-                      }}
-                    >
-                      {msg.content}
-                    </ReactMarkdown>
-                  </div>
-
-                  {/* 答案便捷操作条 (一键复制全文 + 状态反馈) */}
-                  <div className="flex items-center gap-2 pt-1 select-none">
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(msg.content);
-                        setCopiedMessageIdx(i);
-                        setTimeout(() => setCopiedMessageIdx(null), 2000);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition text-[11px] font-semibold text-[#8E8E93] hover:text-black dark:hover:text-white"
-                      title="复制回答全文到剪贴板"
-                    >
-                      {copiedMessageIdx === i ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-[#34C759]" />
-                          <span className="text-[#34C759]">已复制</span>
-                        </>
+                  {/* 2. 工具调用步骤聚合胶囊 (彻底消灭 10 条刷屏！) */}
+                  {turn.toolSteps.length > 0 && (
+                    <div className="my-1 max-w-2xl select-none">
+                      {turn.toolSteps.length === 1 ? (
+                        <div
+                          onClick={() => setSelectedToolDetail(turn.toolSteps[0])}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 dark:bg-[#18181A] border border-[#E5E5EA] dark:border-[#2C2C2E] hover:border-[#0A84FF]/60 text-xs text-[#8E8E93] cursor-pointer transition shadow-sm hover:scale-[1.01]"
+                          title="点击查看执行详情"
+                        >
+                          <div className="w-5 h-5 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center shrink-0">
+                            {React.createElement(turn.toolSteps[0].icon, { className: `w-3 h-3 ${turn.toolSteps[0].color}` })}
+                          </div>
+                          <span className="font-mono text-xs text-[#1C1C1E] dark:text-[#E4E4E7] font-medium truncate max-w-md">
+                            {turn.toolSteps[0].label}
+                          </span>
+                          <span className="text-[10px] text-[#8E8E93] hover:text-[#0A84FF] font-semibold">详情 →</span>
+                        </div>
                       ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>复制回答</span>
-                        </>
+                        <div className="space-y-1.5">
+                          <div
+                            onClick={() => setExpandedToolTurns(prev => ({ ...prev, [turn.id]: !prev[turn.id] }))}
+                            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/90 dark:bg-[#18181A] border border-[#E5E5EA] dark:border-[#2C2C2E] hover:border-[#0A84FF]/60 text-xs text-[#8E8E93] cursor-pointer transition shadow-sm"
+                          >
+                            <Zap className="w-3.5 h-3.5 text-[#FF9F0A]" />
+                            <span className="font-semibold text-black dark:text-white">
+                              已执行 {turn.toolSteps.length} 个操作
+                            </span>
+                            <span className="text-[10px] text-[#8E8E93]">
+                              ({turn.toolSteps.slice(0, 2).map(t => t.label.slice(0, 8)).join(", ")}...)
+                            </span>
+                            {isExpandedTools ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                          </div>
+
+                          {isExpandedTools && (
+                            <div className="pl-3 py-1 space-y-1 border-l-2 border-[#0A84FF]/30 animate-in fade-in duration-100">
+                              {turn.toolSteps.map((tool, tIdx) => (
+                                <div
+                                  key={tIdx}
+                                  onClick={() => setSelectedToolDetail(tool)}
+                                  className="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-black/5 dark:bg-[#1C1C1E]/60 hover:bg-[#0A84FF]/10 text-[11px] text-[#8E8E93] cursor-pointer transition max-w-lg"
+                                >
+                                  {React.createElement(tool.icon, { className: `w-3 h-3 ${tool.color} shrink-0` })}
+                                  <span className="font-mono truncate flex-1 text-[#1C1C1E] dark:text-[#D1D1D6]">{tool.label}</span>
+                                  <span className="text-[10px] hover:text-[#0A84FF] shrink-0">详情</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       )}
-                    </button>
-                  </div>
+                    </div>
+                  )}
+
+                  {/* 3. 正文 Markdown 内容 */}
+                  {turn.content && turn.content.trim() && (
+                    <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5]">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={{
+                          code({ inline, className, children, ...props }: any) {
+                            const match = /language-(\w+)/.exec(className || "");
+                            const codeText = String(children).replace(/\n$/, "");
+                            if (!inline && match) {
+                              return <CodeBlock language={match[1]} code={codeText} />;
+                            }
+                            return (
+                              <code className="bg-[#E5E5EA] dark:bg-[#2C2C2E] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#D1D1D6]" {...props}>
+                                {children}
+                              </code>
+                            );
+                          },
+                          img({ src, alt, ...props }: any) {
+                            return <MarkdownImage src={src} alt={alt} {...props} />;
+                          }
+                        }}
+                      >
+                        {turn.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+
+                  {/* 4. 答案便捷操作条 (仅在最终答案处展示 1 次！) */}
+                  {turn.content && turn.content.trim() && (
+                    <div className="flex items-center gap-2 pt-1 select-none">
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(turn.content);
+                          setCopiedMessageIdx(turnIdx);
+                          setTimeout(() => setCopiedMessageIdx(null), 2000);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition text-[11px] font-semibold text-[#8E8E93] hover:text-black dark:hover:text-white"
+                        title="复制回答全文到剪贴板"
+                      >
+                        {copiedMessageIdx === turnIdx ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-[#34C759]" />
+                            <span className="text-[#34C759]">已复制</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>复制回答</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
-            })}
+            });
+            })()}
 
             {/* 流式思考与正文增量展示 */}
             {loading && (
@@ -2109,6 +2177,22 @@ export default function App() {
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
                   </div>
+
+                  <div
+                    onClick={() => setSettingsView("backup")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#AF52DE] flex items-center justify-center text-white">
+                        <Archive className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">备份与恢复</div>
+                        <div className="text-xs text-[#8E8E93]">导出加密备份，或从备份中恢复</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
                 </div>
               </div>
 
@@ -2127,6 +2211,22 @@ export default function App() {
                       <div>
                         <div className="text-sm font-semibold text-black dark:text-white">关于 Minis</div>
                         <div className="text-xs text-[#8E8E93]">版本与项目信息</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <div
+                    onClick={() => setSettingsView("logs")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#64D2FF] flex items-center justify-center text-white">
+                        <FileText className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">应用日志</div>
+                        <div className="text-xs text-[#8E8E93]">查看与导出应用日志</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -3019,7 +3119,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.10 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.11 (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3088,12 +3188,27 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：1.13.0.10 (Windows 测试版)
+                  当前版本：1.13.0.11 (Windows 测试版)
                 </div>
               </div>
             </div>
           </div>
         </div>
+      )}
+
+      {settingsView === "logs" && (
+        <LogsManager onClose={() => setSettingsView("root")} />
+      )}
+
+      {settingsView === "backup" && (
+        <BackupRestoreManager
+          onClose={() => setSettingsView("root")}
+          onRefreshData={() => {
+            loadSessions();
+            loadMounts();
+            loadSkills();
+          }}
+        />
       )}
 
       {settingsView === "memory" && (

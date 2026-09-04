@@ -234,7 +234,7 @@ impl AgentEngine {
 
                 let mut request_map = serde_json::Map::new();
                 request_map.insert("model".to_string(), json!(try_model));
-                request_map.insert("messages".to_string(), json!(history));
+                request_map.insert("messages".to_string(), json!(Self::format_history_for_llm(&history)));
                 request_map.insert("tools".to_string(), tools_schema.clone());
                 request_map.insert("stream".to_string(), json!(true));
                 request_map.insert("stream_options".to_string(), json!({ "include_usage": true }));
@@ -364,6 +364,8 @@ impl AgentEngine {
                                         if let Some(reasoning_chunk) = delta
                                             .get("reasoning_content")
                                             .or_else(|| delta.get("reasoning"))
+                                            .or_else(|| delta.get("thought"))
+                                            .or_else(|| delta.get("thinking"))
                                             .and_then(|v| v.as_str())
                                         {
                                             if !is_in_thinking_phase {
@@ -768,5 +770,56 @@ impl AgentEngine {
                 }
             }
         ])
+    }
+
+    pub fn format_history_for_llm(history: &[ChatMessage]) -> Vec<Value> {
+        let mut out = Vec::new();
+        for msg in history {
+            let mut obj = serde_json::Map::new();
+            obj.insert("role".to_string(), json!(msg.role));
+
+            if msg.role == "user" && msg.images.as_ref().map_or(false, |imgs| !imgs.is_empty()) {
+                let mut parts = Vec::new();
+                if !msg.content.trim().is_empty() {
+                    parts.push(json!({
+                        "type": "text",
+                        "text": msg.content
+                    }));
+                }
+                if let Some(ref imgs) = msg.images {
+                    for img in imgs {
+                        let image_url = if img.starts_with("data:image/") || img.starts_with("http") {
+                            img.clone()
+                        } else {
+                            let minis_home = crate::sandbox::SandboxManager::get_minis_home();
+                            let clean = img.trim_start_matches("minis://attachments/").trim_start_matches("/var/minis/attachments/");
+                            let local_p = minis_home.join("attachments").join(clean);
+                            if let Ok(bytes) = std::fs::read(&local_p) {
+                                format!("data:image/png;base64,{}", crate::sandbox::base64_encode(&bytes))
+                            } else {
+                                img.clone()
+                            }
+                        };
+                        parts.push(json!({
+                            "type": "image_url",
+                            "image_url": { "url": image_url }
+                        }));
+                    }
+                }
+                obj.insert("content".to_string(), Value::Array(parts));
+            } else {
+                obj.insert("content".to_string(), json!(msg.content));
+            }
+
+            if let Some(ref tc) = msg.tool_calls {
+                obj.insert("tool_calls".to_string(), json!(tc));
+            }
+            if let Some(ref tcid) = msg.tool_call_id {
+                obj.insert("tool_call_id".to_string(), json!(tcid));
+            }
+
+            out.push(Value::Object(obj));
+        }
+        out
     }
 }

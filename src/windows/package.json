@@ -1,7 +1,7 @@
 {
   "name": "openminis-windows",
-  "version": "1.13.10",
-  "description": "OpenMinis for Windows (v1.13.0.10 - Windows 测试版)",
+  "version": "1.13.11",
+  "description": "OpenMinis for Windows (v1.13.0.11 - Windows 测试版)",
   "private": true,
   "scripts": {
     "dev": "vite",

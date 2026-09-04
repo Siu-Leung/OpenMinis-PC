@@ -5,7 +5,9 @@
 //! 备注：Windows 测试版 (Experimental)
 
 mod agent;
+mod backup;
 mod browser;
+mod logs;
 mod mcp;
 mod memory;
 mod model_groups;
@@ -594,18 +596,47 @@ async fn read_image_data_url(path_or_url: String) -> Result<String, String> {
         }
     };
 
-    if !resolved_path.exists() {
-        return Err(format!("图片文件不存在: {}", resolved_path.display()));
-    }
+    let (bytes, ext) = if resolved_path.exists() {
+        let b = std::fs::read(&resolved_path)
+            .map_err(|e| format!("读取图片失败: {}", e))?;
+        let e = resolved_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("png")
+            .to_lowercase();
+        (b, e)
+    } else {
+        // 从 WSL 沙箱直接读取 (/var/minis/attachments/... 或 /var/minis/workspace/...)
+        let wsl_subpath = if clean.starts_with("attachments") || clean.starts_with("workspace") || clean.starts_with("shared") {
+            format!("/var/minis/{}", clean)
+        } else {
+            format!("/var/minis/attachments/{}", clean)
+        };
+        let mut cmd = std::process::Command::new("wsl");
+        cmd.args(["-d", "OpenMinisSandbox", "-u", "root", "base64", "-w", "0", &wsl_subpath]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let out = cmd.output().map_err(|e| format!("执行 WSL 读取命令失败: {}", e))?;
+        if !out.status.success() {
+            return Err(format!("图片文件不存在: {} (宿主与沙箱均未找到)", clean));
+        }
+        let b64_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let decoded = sandbox::base64_decode(&b64_str)
+            .map_err(|e| format!("Base64 解码沙箱图片失败: {}", e))?;
 
-    let bytes = std::fs::read(&resolved_path)
-        .map_err(|e| format!("读取图片失败: {}", e))?;
-    
-    let ext = resolved_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("png")
-        .to_lowercase();
+        // 写入宿主机缓存供后续秒开
+        if let Some(parent) = resolved_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&resolved_path, &decoded);
+
+        let e = clean.split('.').last().unwrap_or("png").to_lowercase();
+        (decoded, e)
+    };
+
     let mime = match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
@@ -617,6 +648,163 @@ async fn read_image_data_url(path_or_url: String) -> Result<String, String> {
 
     let b64 = sandbox::base64_encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, b64))
+}
+
+// === 日志系统 ===
+
+#[tauri::command]
+fn get_logs_summary() -> Result<logs::LogsSummary, String> {
+    logs::list_logs()
+}
+
+#[tauri::command]
+fn read_log_file(name: String) -> Result<String, String> {
+    logs::read_log(&name)
+}
+
+#[tauri::command]
+fn delete_all_logs() -> Result<(), String> {
+    logs::delete_all_logs()
+}
+
+// === 备份与恢复 ===
+
+#[tauri::command]
+async fn create_backup(options: backup::BackupOptions) -> Result<String, String> {
+    backup::create_backup(options)
+}
+
+#[tauri::command]
+async fn restore_backup(file_path: String) -> Result<backup::RestoreSummary, String> {
+    backup::restore_backup(&file_path)
+}
+
+#[tauri::command]
+async fn pick_backup_file() -> Result<Option<String>, String> {
+    backup::pick_backup_file()
+}
+
+#[tauri::command]
+async fn pick_save_backup_path() -> Result<Option<String>, String> {
+    backup::pick_save_backup_path()
+}
+
+// === 模型实时测活 ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultimodalTestResult {
+    pub supports_text: bool,
+    pub supports_vision: bool,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+async fn test_model_multimodal(
+    provider_url: String,
+    api_key: String,
+    model: String,
+) -> Result<MultimodalTestResult, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let mut clean_url = provider_url.trim().trim_end_matches('/').to_string();
+    if !clean_url.ends_with("/v1") && !clean_url.contains("/v1/") {
+        clean_url.push_str("/v1");
+    }
+    let url = format!("{}/chat/completions", clean_url);
+    let start = std::time::Instant::now();
+
+    // 1. 测试纯文本
+    let text_body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "1" }],
+        "max_tokens": 1
+    });
+
+    let mut req1 = client.post(&url);
+    if !api_key.trim().is_empty() {
+        req1 = req1.header("Authorization", format!("Bearer {}", api_key.trim()));
+    }
+    let resp1 = req1.json(&text_body).send().await.map_err(|e| format!("文本测试请求失败: {}", e))?;
+    let elapsed = start.elapsed().as_millis() as u64;
+    let s1 = resp1.status();
+    let supports_text = s1.is_success() || s1.as_u16() == 429;
+
+    // 2. 测试图片多模态 (1x1 transparent PNG)
+    let tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    let vision_body = serde_json::json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "hi" },
+                { "type": "image_url", "image_url": { "url": tiny_png } }
+            ]
+        }],
+        "max_tokens": 1
+    });
+
+    let mut req2 = client.post(&url);
+    if !api_key.trim().is_empty() {
+        req2 = req2.header("Authorization", format!("Bearer {}", api_key.trim()));
+    }
+    let resp2 = req2.json(&vision_body).send().await;
+    let supports_vision = match resp2 {
+        Ok(r) => {
+            let st = r.status();
+            st.is_success() || st.as_u16() == 429
+        }
+        Err(_) => false,
+    };
+
+    Ok(MultimodalTestResult {
+        supports_text,
+        supports_vision,
+        latency_ms: elapsed,
+        error: if !supports_text { Some(format!("HTTP 状态: {}", s1)) } else { None },
+    })
+}
+
+#[tauri::command]
+async fn test_model_latency(
+    provider_url: String,
+    api_key: String,
+    model: String,
+) -> Result<u64, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let mut clean_url = provider_url.trim().trim_end_matches('/').to_string();
+    if !clean_url.ends_with("/v1") && !clean_url.contains("/v1/") {
+        clean_url.push_str("/v1");
+    }
+    let url = format!("{}/chat/completions", clean_url);
+    let start = std::time::Instant::now();
+
+    let mut req = client.post(&url);
+    if !api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+    }
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "hi" }],
+        "max_tokens": 1
+    });
+
+    let resp = req.json(&body).send().await.map_err(|e| format!("请求失败: {}", e))?;
+    let elapsed = start.elapsed().as_millis() as u64;
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 400 || status.as_u16() == 429 {
+        Ok(elapsed)
+    } else {
+        let err = resp.text().await.unwrap_or_default();
+        Err(format!("HTTP {}: {}", status, err))
+    }
 }
 
 // === 定时任务调度器 ===
@@ -803,7 +991,19 @@ fn main() {
             search_memory,
             get_today_memory,
             get_global_memory,
-            save_global_memory
+            save_global_memory,
+            // 日志系统
+            get_logs_summary,
+            read_log_file,
+            delete_all_logs,
+            // 备份与恢复
+            create_backup,
+            restore_backup,
+            pick_backup_file,
+            pick_save_backup_path,
+            // 实时测活
+            test_model_latency,
+            test_model_multimodal
         ])
         .run(tauri::generate_context!())
         .expect("启动 OpenMinis Windows 应用失败");

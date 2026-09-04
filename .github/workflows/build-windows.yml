@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.10 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.10_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.10_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.10.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.11 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.11_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.11_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.11.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,20 +74,22 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.10
+      - name: Update GitHub Release v1.13.0.11
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.10 (Windows 测试版)
-          tag_name: v1.13.0.10
+          name: OpenMinis Windows v1.13.0.11 (Windows 测试版)
+          tag_name: v1.13.0.11
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.10 (1:1 原版模型分组/回退策略 + 外部目录原生手选 + 图片/快照直接渲染 + 答案便捷复制 + 拖拽全支持)
+            ### 📦 OpenMinis for Windows v1.13.0.11 (单次任务流聚合 + Minis Computer 实时画中画/手动介入 + 大模型视觉盲区修复 + 模型多模态图文双测 + 日志系统与备份恢复)
             > **⚠️ 备注：Windows 测试版 (Experimental)**
             
-            - **1:1 原版模型分组与回退系统 (Model Groups)**：深度对标官方截图，支持创建多模型分组、路由策略（回退 / 负载均衡）、Fallback 触发条件（默认 / 始终）、模型排序与提供商标签、会话默认值（启用思考、思考强度、限制上下文窗口、最大上下文）以及 Defaults 系统默认分配与 Minis 运行时可见模型管理
-            - **挂载外部目录支持手动选择**：添加外部挂载时提供醒目的【选择文件夹】按键，直接唤起 Windows 系统原生文件夹浏览对话框，自动填入宿主绝对路径并智能提取别名
-            - **聊天窗口图片与快照直接显示**：彻底解决无法发送或展示截图的问题，自动识别 `minis://attachments/`、`/var/minis/` 与本地快照，支持点击全屏灯箱放大与保存
-            - **答案一键便捷复制**：每条 Assistant 消息下方常驻复制按键，带绿标反馈
-            - **原生文件拖拽全面生效**：开启 Windows 级 `dragDropEnabled` 并融合 Tauri 原生事件与 HTML5 drop，随意拖拽文件即可无感上传至沙箱工作区
+            - **聚合单次任务流 (Turn-Level Aggregation)**：彻底消灭重复工具刷屏，一次交互内所有工具执行收纳于紧凑折叠胶囊，最终答案底部常驻单一复制按键
+            - **Minis Computer 实时画中画小电脑**：左下角浮现微型虚拟电脑，实时呈现终端黑框字符流与网页渲染画面；配备【🛑 手动介入 (Take Over)】功能，一键弹出交互窗口轻松扫码、滑块过验证，完成后一键交还 Agent 继续任务
+            - **修复大模型视觉盲区**：发送图片自动装配 OpenAI / Gemini 官方标准多模态 `image_url` 结构，大模型真实看见图片内容
+            - **修复沙箱图片/截图本地渲染**：增强图像协议跨沙箱直接拉取 WSL 内部附件，天气图与截屏在聊天流高清直出
+            - **模型图文多模态双测**：在模型选择器与提供商配置中增加 ⚡ 闪电按钮，一键测试网络延迟与图片多模态兼容性，精准点亮 `img` 徽章
+            - **新建对话纯净优化**：移除多余欢迎文字，默认自动继承 Primary 模型或上次选用模型
+            - **1:1 原版日志系统与备份恢复**：支持每日日志自动轮转与一键导出；支持 `.minisbak` 全模块打包与一键导入恢复
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
