@@ -460,7 +460,8 @@ function groupSessionsByDate(sessions: SessionRecord[]) {
   const startOf30Days = startOfToday - 30 * 86400000;
 
   for (const s of sessions) {
-    const time = s.updated_at ? s.updated_at * 1000 : startOfToday;
+    const rawTime = s.updated_at || s.created_at || Date.now();
+    const time = rawTime < 10_000_000_000 ? rawTime * 1000 : rawTime;
     if (time >= startOfToday) {
       groups[0].items.push(s);
     } else if (time >= startOfYesterday) {
@@ -1103,7 +1104,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.28");
+  const [appVersion, setAppVersion] = useState("1.13.29");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -3508,7 +3509,7 @@ export default function App() {
           providers={providers}
           onSaveState={nextState => {
             setModelGroupsState(nextState);
-            invoke("save_model_groups_state", { stateData: nextState });
+            invoke("save_model_groups_state", { modelGroupsState: nextState });
           }}
           onClose={() => setSettingsView("root")}
         />
