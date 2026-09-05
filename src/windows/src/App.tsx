@@ -1103,7 +1103,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.27");
+  const [appVersion, setAppVersion] = useState("1.13.28");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -1208,11 +1208,13 @@ export default function App() {
       } else if (event_type === "tool_start") {
         // 新版事件: content = { tool, args }, 旧版兼容: content = "正在调用: xxx"
         let toolName = "";
+        let toolCallId = "";
         let toolArgs: any = {};
         try {
           const parsed = JSON.parse(content);
           if (parsed.tool) {
             toolName = parsed.tool;
+            toolCallId = parsed.id || "";
             toolArgs = parsed.args || {};
           }
         } catch (_) {
@@ -1231,21 +1233,34 @@ export default function App() {
               ? toolArgs?.path || ""
               : "";
         setToolSteps(prev => [...prev, {
-          id: `${toolName}-${Date.now()}`,
+          id: toolCallId || `${toolName}-${Date.now()}`,
           toolName,
           title: toolDisplayTitle(toolName),
           status: "running",
           toolType: stepType,
           commandOrUrl,
         }]);
+      } else if (event_type === "tool_snapshot") {
+        try {
+          const parsed = JSON.parse(content);
+          if (parsed.id && parsed.url) {
+            setToolSteps(prev => prev.map(step =>
+              step.id === parsed.id ? { ...step, previewImageUrl: parsed.url } : step
+            ));
+          }
+        } catch (_) {
+          // Ignore malformed legacy snapshot events.
+        }
       } else if (event_type === "tool_end") {
         setActiveToolName(null);
         // 新版事件: content = { tool, output } -> 提取真实输出与截图路径
+        let toolCallId = "";
         let parsedOutput: string | undefined;
         let previewImg: string | undefined;
         let succeeded = true;
         try {
           const parsed = JSON.parse(content);
+          toolCallId = parsed.id || "";
           parsedOutput = typeof parsed.output === "string" ? parsed.output : undefined;
           succeeded = parsed.success !== false;
           if (parsedOutput) {
@@ -1258,9 +1273,19 @@ export default function App() {
           parsedOutput = content || undefined;
         }
 
-        // 按后端真实结果更新最后一个运行中的步骤
+        // Prefer the stable tool call id; retain legacy fallback for old events.
         setToolSteps(prev => {
           const next = [...prev];
+          const exactIndex = toolCallId ? next.findIndex(step => step.id === toolCallId) : -1;
+          if (exactIndex >= 0) {
+            next[exactIndex] = {
+              ...next[exactIndex],
+              status: succeeded ? "success" : "failed",
+              outputSnippet: parsedOutput,
+              previewImageUrl: previewImg || next[exactIndex].previewImageUrl,
+            };
+            return next;
+          }
           for (let i = next.length - 1; i >= 0; i--) {
             if (next[i].status === "running") {
               next[i] = {

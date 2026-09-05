@@ -127,10 +127,9 @@ export function FloatingToolBar({ steps, onOpenDetail, onTakeover }: FloatingToo
             <div className="text-[7px] text-[#34C759]/80 leading-tight line-clamp-3 font-mono">
               {current.outputSnippet || "Alpine Linux sandbox active..."}
             </div>
-            {/* 模拟 CPU / MEM HUD 缎带 (1:1 原版质感) */}
             <div className="text-[6px] text-white/50 bg-white/10 px-1 py-0.5 rounded flex justify-between tracking-tighter">
-              <span>CPU {isRunning ? "4.2%" : "0.0%"}</span>
-              <span>MEM 128M</span>
+              <span>{isRunning ? "RUNNING" : "READY"}</span>
+              <span>{current.status.toUpperCase()}</span>
             </div>
           </div>
         ) : current.toolType === "file" ? (

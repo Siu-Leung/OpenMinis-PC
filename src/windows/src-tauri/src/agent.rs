@@ -638,7 +638,7 @@ impl AgentEngine {
                     // 携带工具参数 JSON, 前端据此驱动 Minis Computer 画中画小电脑 (真实 URL/命令)
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_start".to_string(),
-                        content: json!({ "tool": fn_name, "args": fn_args }).to_string(),
+                        content: json!({ "id": call_id, "tool": fn_name, "args": fn_args }).to_string(),
                     });
                     append_log(&format!("[Tool] 调用 {} 参数: {}", fn_name, fn_args_str));
 
@@ -646,8 +646,12 @@ impl AgentEngine {
                     if fn_name == "browser_use" {
                         if let Some(media_url) = Self::extract_media_url(&result) {
                             if !pending_media.contains(&media_url) {
-                                pending_media.push(media_url);
+                                pending_media.push(media_url.clone());
                             }
+                            let _ = app.emit("agent-stream", StreamEvent {
+                                event_type: "tool_snapshot".to_string(),
+                                content: json!({ "id": call_id, "url": media_url }).to_string(),
+                            });
                         }
                     }
 
@@ -685,7 +689,7 @@ impl AgentEngine {
                     };
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_end".to_string(),
-                        content: json!({ "tool": fn_name, "output": snippet, "success": !failed }).to_string(),
+                        content: json!({ "id": call_id, "tool": fn_name, "output": snippet, "success": !failed }).to_string(),
                     });
 
                     history.push(ChatMessage {
