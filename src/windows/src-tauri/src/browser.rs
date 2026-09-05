@@ -1,6 +1,7 @@
 //! OpenMinis Windows 浏览器自动化核心 (Edge Headless 加固版)
 //! 备注：私人用极度不稳定 Aicoding 改
 
+use crate::logs::append_log;
 use crate::sandbox::SandboxManager;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,7 @@ impl BrowserEngine {
                 #[cfg(target_os = "windows")]
                 edge_cmd.creation_flags(0x08000000);
 
+                edge_cmd.kill_on_drop(true);
                 let edge_output = timeout(Duration::from_secs(20), edge_cmd.output()).await;
 
                 let raw_html = match edge_output {
@@ -151,7 +153,14 @@ print(text[:10000])
                 #[cfg(target_os = "windows")]
                 edge_shot_cmd.creation_flags(0x08000000);
 
+                let started_at = std::time::Instant::now();
+                append_log(&format!("[Browser] screenshot Edge start: {}", target_url));
+                edge_shot_cmd.kill_on_drop(true);
                 let edge_shot = timeout(Duration::from_secs(25), edge_shot_cmd.output()).await;
+                append_log(&format!(
+                    "[Browser] screenshot Edge finished in {} ms",
+                    started_at.elapsed().as_millis()
+                ));
 
                 match edge_shot {
                     Ok(Ok(out)) if out.status.success() => {
@@ -167,12 +176,33 @@ print(text[:10000])
                         }
                         // 2) 直写沙箱 /var/minis/attachments；主副本失败时不得返回成功 URL。
                         let sandbox_path = format!("/var/minis/attachments/{}", filename);
-                        if let Err(error) = self.sandbox.write_sandbox_bytes(&sandbox_path, &bytes, false).await {
-                            return BrowserActionResult {
-                                success: false,
-                                data: None,
-                                error: Some(format!("截图写入沙箱失败: {}", error)),
-                            };
+                        let sandbox_started_at = std::time::Instant::now();
+                        let sandbox_write = timeout(
+                            Duration::from_secs(12),
+                            self.sandbox
+                                .write_sandbox_bytes(&sandbox_path, &bytes, false),
+                        )
+                        .await;
+                        append_log(&format!(
+                            "[Browser] screenshot sandbox write finished in {} ms",
+                            sandbox_started_at.elapsed().as_millis()
+                        ));
+                        match sandbox_write {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                return BrowserActionResult {
+                                    success: false,
+                                    data: None,
+                                    error: Some(format!("截图写入沙箱失败: {}", error)),
+                                };
+                            }
+                            Err(_) => {
+                                return BrowserActionResult {
+                                    success: false,
+                                    data: None,
+                                    error: Some("截图写入沙箱超时".to_string()),
+                                };
+                            }
                         }
                         // 3) Rust 直接写宿主缓存，供 read_image_data_url 秒开。
                         let _ = std::fs::write(&host_copy_path, &bytes);

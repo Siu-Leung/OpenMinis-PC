@@ -339,33 +339,20 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
         }
     }
 
-    /// 写入沙箱文件数据 (流式写入与 UNC 宿主直写，突破任何命令行参数长度限制)
-    pub async fn write_sandbox_bytes(&self, path: &str, data: &[u8], append: bool) -> Result<(), String> {
-        // 方案 1: 尝试通过 Windows UNC 宿主文件系统直接秒级安全写入 (大文件零损耗)
-        let clean_path = path.trim_start_matches("/var/minis/").replace('/', "\\");
-        let unc_path = PathBuf::from(format!(r"\\wsl$\{}\var\minis\{}", self.distro_name, clean_path));
-        
-        if let Some(parent) = unc_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(append)
-            .truncate(!append)
-            .open(&unc_path)
-        {
-            use std::io::Write;
-            if file.write_all(data).is_ok() {
-                return Ok(());
-            }
-        }
-
-        // 方案 2: 降级通过 stdin 管道流式写入 (绝不拼接在命令行，支持任意尺寸文件)
+    /// 写入沙箱文件数据 (stdin 流式写入，避免 \\wsl$ UNC 在 WSL 休眠时阻塞)
+    pub async fn write_sandbox_bytes(
+        &self,
+        path: &str,
+        data: &[u8],
+        append: bool,
+    ) -> Result<(), String> {
+        // 通过 stdin 管道写入，数据不拼接在命令行，支持任意尺寸文件。
         let safe_path = path.replace('\'', "'\\''");
         let op = if append { ">>" } else { ">" };
-        let sh_cmd = format!("mkdir -p \"$(dirname '{}')\" && cat {} '{}'", safe_path, op, safe_path);
+        let sh_cmd = format!(
+            "mkdir -p \"$(dirname '{}')\" && cat {} '{}'",
+            safe_path, op, safe_path
+        );
 
         let mut cmd = Self::silent_command("wsl");
         cmd.args([
@@ -377,6 +364,7 @@ pip install --break-system-packages beautifulsoup4 requests 2>/dev/null || true
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        cmd.kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| format!("启动写入管道子进程失败: {}", e))?;
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;

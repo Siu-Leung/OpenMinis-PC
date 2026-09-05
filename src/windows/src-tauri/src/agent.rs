@@ -1,12 +1,12 @@
 //! OpenMinis Windows Agent Loop 核心逻辑 (模型组 Fallback 自动回退 + 记忆/技能自动注入 + 中断停止版)
 //! 备注：Windows 测试版 (Experimental)
 
+use crate::logs::append_log;
 use crate::mounts::MountManager;
 use crate::skills::SkillsManager;
 use crate::soul::SoulManager;
 use crate::tools::ToolDispatcher;
 use crate::usage::UsageTracker;
-use crate::logs::append_log;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -640,7 +640,7 @@ impl AgentEngine {
                         event_type: "tool_start".to_string(),
                         content: json!({ "id": call_id, "tool": fn_name, "args": fn_args }).to_string(),
                     });
-                    append_log(&format!("[Tool] 调用 {} 参数: {}", fn_name, fn_args_str));
+                    append_log(&format!("[Tool] 调用 {} 参数: {}", fn_name, fn_args));
 
                     let result = self.dispatcher.dispatch(fn_name, fn_args.clone()).await;
                     if fn_name == "browser_use" {
@@ -1096,6 +1096,17 @@ mod tests {
     }
 
     #[test]
+    fn sanitizes_embedded_url_annotations_in_shell_commands() {
+        let sanitized = sanitize_tool_args(json!({
+            "command": "curl -s @url:`https://news.ycombinator.com/` && python3 -c \"open('@url:`https://weather.com.cn`')\""
+        }));
+        assert_eq!(
+            sanitized["command"],
+            "curl -s https://news.ycombinator.com/ && python3 -c \"open('https://weather.com.cn')\""
+        );
+    }
+
+    #[test]
     fn unlimited_history_keeps_every_message() {
         let history = vec![message("system", "rules"), message("user", "hello")];
         assert_eq!(AgentEngine::limit_history(&history, None).len(), history.len());
@@ -1138,31 +1149,28 @@ fn extract_llm_error(err_text: &str) -> String {
 /// (Hermes 上下文注入的 URL 标注被模型误抄进 shell 命令与工具参数)
 fn sanitize_tool_args(args: Value) -> Value {
     fn clean_str(s: &str) -> String {
-        let mut out = s.trim().to_string();
-        // 剥掉 @url: 前缀 (无论大小写)
-        if let Some(idx) = out.find("url:") {
-            let prefix_end = idx + 4;
-            let before = &out[..idx];
-            // 只在 @url: 前缀时剥离 (避免误伤正文中的 "url:")
-            if before.trim_end().ends_with('@') {
-                out = out[prefix_end..].trim_start().to_string();
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(index) = rest.find("@url:") {
+            out.push_str(&rest[..index]);
+            rest = &rest[index + 5..];
+            if let Some(after_tick) = rest.strip_prefix('`') {
+                if let Some(end) = after_tick.find('`') {
+                    out.push_str(&after_tick[..end]);
+                    rest = &after_tick[end + 1..];
+                } else {
+                    out.push_str(after_tick);
+                    rest = "";
+                }
             }
         }
-        // 剥掉外层反引号
-        if out.starts_with('`') && out.ends_with('`') && out.len() >= 2 {
-            out = out[1..out.len() - 1].to_string();
+        out.push_str(rest);
+        let trimmed = out.trim();
+        if trimmed.starts_with('`') && trimmed.ends_with('`') && trimmed.len() >= 2 {
+            trimmed[1..trimmed.len() - 1].to_string()
+        } else {
+            trimmed.to_string()
         }
-        // 再剥一次可能残留的 @url: (双重包装)
-        if let Some(idx) = out.find("url:") {
-            let before = &out[..idx];
-            if before.trim_end().ends_with('@') {
-                out = out[idx + 4..].trim_start().to_string();
-            }
-        }
-        if out.starts_with('`') && out.ends_with('`') && out.len() >= 2 {
-            out = out[1..out.len() - 1].to_string();
-        }
-        out
     }
 
     match args {
