@@ -165,15 +165,17 @@ print(text[:10000])
                                 error: Some("Edge 截图文件为空".to_string()),
                             };
                         }
-                        // 2) 直写沙箱 /var/minis/attachments
+                        // 2) 直写沙箱 /var/minis/attachments；主副本失败时不得返回成功 URL。
                         let sandbox_path = format!("/var/minis/attachments/{}", filename);
-                        let _ = self.sandbox.write_sandbox_bytes(&sandbox_path, &bytes, false).await;
-                        // 3) 沙箱内 cp 到宿主 .openminis/attachments (沙箱无 /mnt 挂载时此步跳过, 兜底在 read_image_data_url 的 WSL 读取)
-                        let copy_cmd = format!(
-                            "cp '/var/minis/attachments/{}' '{}' 2>/dev/null || true",
-                            filename, host_copy_path.to_string_lossy()
-                        );
-                        let _ = self.sandbox.execute_shell(&copy_cmd, 5).await;
+                        if let Err(error) = self.sandbox.write_sandbox_bytes(&sandbox_path, &bytes, false).await {
+                            return BrowserActionResult {
+                                success: false,
+                                data: None,
+                                error: Some(format!("截图写入沙箱失败: {}", error)),
+                            };
+                        }
+                        // 3) Rust 直接写宿主缓存，供 read_image_data_url 秒开。
+                        let _ = std::fs::write(&host_copy_path, &bytes);
                         BrowserActionResult {
                             success: true,
                             data: Some(format!("minis://attachments/{}", filename)),
@@ -181,22 +183,10 @@ print(text[:10000])
                         }
                     }
                     _ => {
-                        // 降级: 生成合法 1x1 PNG 占位 (直接写字节, 不再用沙箱 python 写反斜杠非法路径)
-                        let placeholder: [u8; 68] = [
-                            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
-                            b'I', b'H', b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-                            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
-                            0x0D, b'I', b'D', b'A', b'T', 0x08, 0xD7, 0x63, 0x60, 0x60, 0x00, 0x00,
-                            0x00, 0x04, 0x00, 0x01, 0x9C, 0xCD, 0xCD, 0x70, 0x00, 0x00, 0x00, 0x00,
-                            0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-                        ];
-                        let sandbox_path = format!("/var/minis/attachments/{}", filename);
-                        let _ = self.sandbox.write_sandbox_bytes(&sandbox_path, &placeholder, false).await;
-                        let _ = std::fs::write(&host_copy_path, &placeholder);
                         BrowserActionResult {
-                            success: true,
-                            data: Some(format!("minis://attachments/{}", filename)),
-                            error: Some("Edge 截图失败, 已生成占位图".to_string()),
+                            success: false,
+                            data: None,
+                            error: Some("Edge 截图失败，未生成可用图片".to_string()),
                         }
                     }
                 }

@@ -313,12 +313,19 @@ function aggregateMessagesIntoTurns(messages: ChatMessage[]): ChatTurn[] {
           content: m.content || "",
           thinking: m.thinking,
           thinking_duration: m.thinking_duration,
+          images: m.images,
           startMsgIdx: i,
           toolSteps: [],
         };
       } else {
         if (m.thinking) currentAssistantTurn.thinking = m.thinking;
         if (m.thinking_duration) currentAssistantTurn.thinking_duration = m.thinking_duration;
+        if (m.images?.length) {
+          currentAssistantTurn.images = Array.from(new Set([
+            ...(currentAssistantTurn.images || []),
+            ...m.images,
+          ]));
+        }
         if (m.content && m.content.trim()) {
           currentAssistantTurn.content = m.content;
         }
@@ -1096,7 +1103,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.26");
+  const [appVersion, setAppVersion] = useState("1.13.27");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -2344,6 +2351,14 @@ export default function App() {
                       >
                         {turn.content}
                       </ReactMarkdown>
+                    </div>
+                  )}
+
+                  {turn.images && turn.images.length > 0 && (
+                    <div className="flex flex-wrap gap-2 max-w-2xl">
+                      {turn.images.map((image, index) => (
+                        <MarkdownImage key={`${image}-${index}`} src={image} alt="浏览器截图" />
+                      ))}
                     </div>
                   )}
 

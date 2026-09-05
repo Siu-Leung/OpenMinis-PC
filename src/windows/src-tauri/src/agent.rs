@@ -245,6 +245,7 @@ impl AgentEngine {
         let mut repeat_call_count = 0;
         let max_total_tool_calls = 20usize;
         let mut total_tool_calls = 0usize;
+        let mut pending_media: Vec<String> = Vec::new();
 
         for _ in 0..10 {
             if self.abort_flag.load(Ordering::SeqCst) {
@@ -559,7 +560,11 @@ impl AgentEngine {
                 thinking_duration,
                 tool_calls: tool_calls_val.clone(),
                 tool_call_id: None,
-                images: None,
+                images: if pending_media.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut pending_media))
+                },
                 files: None,
             });
 
@@ -638,6 +643,13 @@ impl AgentEngine {
                     append_log(&format!("[Tool] 调用 {} 参数: {}", fn_name, fn_args_str));
 
                     let result = self.dispatcher.dispatch(fn_name, fn_args.clone()).await;
+                    if fn_name == "browser_use" {
+                        if let Some(media_url) = Self::extract_media_url(&result) {
+                            if !pending_media.contains(&media_url) {
+                                pending_media.push(media_url);
+                            }
+                        }
+                    }
 
                     // Send a concise human-readable result to the live UI while
                     // keeping the complete structured result in chat history.
@@ -690,6 +702,16 @@ impl AgentEngine {
             }
         }
 
+        if !pending_media.is_empty() {
+            if let Some(message) = history.iter_mut().rev().find(|message| message.role == "assistant") {
+                let images = message.images.get_or_insert_with(Vec::new);
+                for media in pending_media {
+                    if !images.contains(&media) {
+                        images.push(media);
+                    }
+                }
+            }
+        }
         Ok(history)
     }
 
@@ -896,6 +918,19 @@ impl AgentEngine {
         ])
     }
 
+    fn extract_media_url(result: &Value) -> Option<String> {
+        let success = result.get("success").and_then(Value::as_bool).unwrap_or(false);
+        if !success {
+            return None;
+        }
+        let url = result.get("data").and_then(Value::as_str)?.trim();
+        let lower = url.to_ascii_lowercase();
+        let is_media = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+            .iter()
+            .any(|extension| lower.ends_with(extension));
+        (url.starts_with("minis://") && is_media).then(|| url.to_string())
+    }
+
     fn limit_history(history: &[ChatMessage], limit_tokens: Option<u32>) -> Vec<ChatMessage> {
         let Some(limit_tokens) = limit_tokens.filter(|value| *value > 0) else {
             return history.to_vec();
@@ -1003,6 +1038,28 @@ mod tests {
             images: None,
             files: None,
         }
+    }
+
+    #[test]
+    fn media_url_requires_successful_minis_image_result() {
+        assert_eq!(
+            AgentEngine::extract_media_url(&json!({
+                "success": true,
+                "data": "minis://attachments/weather.png"
+            })),
+            Some("minis://attachments/weather.png".to_string())
+        );
+        assert_eq!(
+            AgentEngine::extract_media_url(&json!({
+                "success": false,
+                "data": "minis://attachments/placeholder.png"
+            })),
+            None
+        );
+        assert_eq!(
+            AgentEngine::extract_media_url(&json!({"success": true, "data": "page text"})),
+            None
+        );
     }
 
     #[test]
