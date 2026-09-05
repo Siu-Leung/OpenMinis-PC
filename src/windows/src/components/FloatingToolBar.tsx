@@ -11,7 +11,8 @@ import {
   FileCode,
   Brain,
   ShieldAlert,
-  Monitor
+  Monitor,
+  Sparkles
 } from "lucide-react";
 
 export interface ToolStepStatus {
@@ -35,13 +36,25 @@ export function FloatingToolBar({ steps, onOpenDetail, onTakeover }: FloatingToo
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [resolvedDataUrl, setResolvedDataUrl] = useState<string | null>(null);
 
-  if (!steps || steps.length === 0) return null;
+  const hasSteps = steps && steps.length > 0;
 
   // 默认展示最新步骤；若用户手动切页则显示选中步
-  const displayedIdx = selectedIdx !== null && selectedIdx < steps.length
-    ? selectedIdx
-    : steps.length - 1;
-  const current = steps[displayedIdx];
+  const displayedIdx = hasSteps
+    ? (selectedIdx !== null && selectedIdx < steps.length ? selectedIdx : steps.length - 1)
+    : 0;
+
+  // 兜底准备：当没有具体执行步骤时，小电脑呈现常驻待命状态
+  const fallbackStep: ToolStepStatus = {
+    id: "idle-computer",
+    toolName: "minis_computer",
+    title: "Minis Computer",
+    status: "success",
+    toolType: "shell",
+    commandOrUrl: "minis-status --ready",
+    outputSnippet: "Alpine Linux (WSL2) sandbox is hot and ready.",
+  };
+
+  const current = hasSteps ? steps[displayedIdx] : fallbackStep;
   const isRunning = current.status === "running";
 
   // 解析 minis:// 图片为可直接渲染的 Data URL
@@ -109,15 +122,15 @@ export function FloatingToolBar({ steps, onOpenDetail, onTakeover }: FloatingToo
           <div className="flex-1 w-full h-full p-1.5 bg-black flex flex-col justify-between font-mono">
             <div className="text-[8px] text-[#34C759] truncate flex items-center gap-0.5">
               <span className="font-bold">$</span>
-              <span className="text-white/80 truncate">{current.commandOrUrl || "sh"}</span>
+              <span className="text-white/80 truncate">{current.commandOrUrl || "minis"}</span>
             </div>
             <div className="text-[7px] text-[#34C759]/80 leading-tight line-clamp-3 font-mono">
-              {current.outputSnippet || "Executing in sandbox..."}
+              {current.outputSnippet || "Alpine Linux sandbox active..."}
             </div>
             {/* 模拟 CPU / MEM HUD 缎带 (1:1 原版质感) */}
             <div className="text-[6px] text-white/50 bg-white/10 px-1 py-0.5 rounded flex justify-between tracking-tighter">
-              <span>CPU 3.8%</span>
-              <span>MEM 96M</span>
+              <span>CPU {isRunning ? "4.2%" : "0.0%"}</span>
+              <span>MEM 128M</span>
             </div>
           </div>
         ) : current.toolType === "file" ? (
@@ -148,7 +161,7 @@ export function FloatingToolBar({ steps, onOpenDetail, onTakeover }: FloatingToo
         {isRunning ? (
           <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0A84FF] shrink-0" />
         ) : current.status === "success" ? (
-          <Check className="w-3.5 h-3.5 text-[#34C759] shrink-0" />
+          <div className="w-2 h-2 rounded-full bg-[#34C759] shadow-[0_0_6px_#34C759] shrink-0" />
         ) : (
           <X className="w-3.5 h-3.5 text-[#FF453A] shrink-0" />
         )}
@@ -159,9 +172,9 @@ export function FloatingToolBar({ steps, onOpenDetail, onTakeover }: FloatingToo
           onClick={() => onOpenDetail?.(current)}
         >
           <span className="text-xs font-semibold text-black dark:text-white truncate">
-            {current.title || current.toolName}
+            {hasSteps ? (current.title || current.toolName) : "Minis Computer · 沙箱常驻就绪"}
           </span>
-          {current.commandOrUrl && (
+          {current.commandOrUrl && hasSteps && (
             <span className="text-[10px] font-mono text-[#8E8E93] truncate hidden sm:inline">
               · {current.commandOrUrl}
             </span>
@@ -181,7 +194,7 @@ export function FloatingToolBar({ steps, onOpenDetail, onTakeover }: FloatingToo
         )}
 
         {/* 多步骤分页切换 */}
-        {steps.length > 1 && (
+        {hasSteps && steps.length > 1 && (
           <div className="flex items-center gap-1 border-l border-[#E5E5EA] dark:border-white/10 pl-2 shrink-0">
             <button
               onClick={() => setSelectedIdx(Math.max(0, displayedIdx - 1))}

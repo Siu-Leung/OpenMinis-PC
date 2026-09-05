@@ -25,6 +25,7 @@ import {
   ArrowUpToLine,
   FolderPlus,
   MessageSquare,
+  GitFork,
   Settings as SettingsIcon,
   Search,
   Trash2,
@@ -590,6 +591,12 @@ export default function App() {
     }
   });
 
+  // 记忆系统双 Tab 状态
+  const [memoryTab, setMemoryTab] = useState<"global" | "daily">("global");
+  const [globalMemoryText, setGlobalMemoryText] = useState<string>("");
+  const [isSavingGlobalMem, setIsSavingGlobalMem] = useState<boolean>(false);
+  const [globalMemSavedToast, setGlobalMemSavedToast] = useState<boolean>(false);
+
   // 后台与系统运行策略 (Background & System)
   const [backgroundConfig, setBackgroundConfig] = useState(() => {
     try {
@@ -801,7 +808,63 @@ export default function App() {
 
   const handleCompactSession = async (id: string) => {
     setContextMenu(null);
-    alert("已执行智能上下文压缩！释放历史 Token 占用。");
+    handleCompactMessages();
+  };
+
+  const handleDuplicateSession = async (session: SessionRecord) => {
+    setContextMenu(null);
+    try {
+      await invoke("duplicate_session", { id: session.id });
+      loadSessions();
+    } catch (err) {
+      alert(`克隆会话失败: ${err}`);
+    }
+  };
+
+  const handleForkFromTurn = async (turnIndex: number, turn: ChatTurn) => {
+    setMessageContextMenu(null);
+    const cutIdx = turn.startMsgIdx + 1;
+    const forkedMessages = messages.slice(0, cutIdx);
+    if (forkedMessages.length === 0) return;
+
+    const newSid = "fork_" + Date.now().toString(36);
+    setCurrentSessionId(newSid);
+    setMessages(forkedMessages);
+    alert("已成功从此消息分叉为新会话！你可以探索不同的推理路线。");
+  };
+
+  // 从历史会话消息中提取出最近的工具调用并恢复小电脑状态
+  const extractToolStepsFromMessages = (msgs: ChatMessage[]): ToolStepStatus[] => {
+    const steps: ToolStepStatus[] = [];
+    for (const m of msgs) {
+      if (m.tool_calls && Array.isArray(m.tool_calls)) {
+        for (const tc of m.tool_calls) {
+          const fnName = tc.function?.name || tc.name || "tool_use";
+          let fnArgs: any = {};
+          try {
+            fnArgs = typeof tc.function?.arguments === "string" ? JSON.parse(tc.function.arguments) : (tc.function?.arguments || {});
+          } catch (_) {}
+          const stepType = inferToolType(fnName);
+          const commandOrUrl = stepType === "browser"
+            ? (fnArgs?.url || "")
+            : stepType === "shell"
+              ? (fnArgs?.command || fnArgs?.cmd || "")
+              : stepType === "file"
+                ? (fnArgs?.path || "")
+                : "";
+          steps.push({
+            id: tc.id || `${fnName}-${Math.random()}`,
+            toolName: fnName,
+            title: toolDisplayTitle(fnName),
+            status: "success",
+            toolType: stepType,
+            commandOrUrl,
+            outputSnippet: undefined,
+          });
+        }
+      }
+    }
+    return steps;
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -967,7 +1030,6 @@ export default function App() {
   // MCP、记忆与诊断
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [memoryText, setMemoryText] = useState("");
-  const [globalMemoryText, setGlobalMemoryText] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [sandboxDiag, setSandboxDiag] = useState<SandboxDiagnostics>({
     isInstalled: true,
@@ -1073,7 +1135,7 @@ export default function App() {
           clearTypingBuffer();
           setLoading(false);
           setAgentStatus("idle");
-          setToolSteps([]);
+          // 保持小电脑常驻展示最后结果，绝不清空
         }
       } else if (event_type === "thinking") {
         setAgentStatus("thinking");
@@ -1587,6 +1649,8 @@ export default function App() {
                               invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
                                 setMessages(msgs);
                                 setCurrentSessionId(s.id);
+                                const steps = extractToolStepsFromMessages(msgs);
+                                setToolSteps(steps);
                               });
                             }}
                             onContextMenu={e => handleContextMenu(e, s)}
@@ -1668,6 +1732,8 @@ export default function App() {
                               invoke<ChatMessage[]>("get_session_messages", { id: s.id }).then(msgs => {
                                 setMessages(msgs);
                                 setCurrentSessionId(s.id);
+                                const steps = extractToolStepsFromMessages(msgs);
+                                setToolSteps(steps);
                               });
                             }}
                             onContextMenu={e => handleContextMenu(e, s)}
@@ -3919,20 +3985,126 @@ export default function App() {
       )}
 
       {settingsView === "memory" && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
-          <div className="bg-[#F2F2F7] dark:bg-[#000000] border border-[#E5E5EA] dark:border-[#1C1C1E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
-            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4 select-none">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-2xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden text-black dark:text-white">
+            {/* 顶栏与 Tab 切换 (1:1 原版 MemoryManagementScreen) */}
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
               <div className="flex items-center gap-3">
                 <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
-                <h2 className="text-lg font-bold text-black dark:text-white">记忆</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-bold">会话与全局记忆</h2>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#5856D6]/15 text-[#5856D6] font-semibold">
+                    Persistent Memory
+                  </span>
+                </div>
+              </div>
+
+              {/* 双 Tab 选择器 */}
+              <div className="flex items-center bg-black/5 dark:bg-white/10 p-0.5 rounded-full text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setMemoryTab("global")}
+                  className={`px-3 py-1 rounded-full transition ${
+                    memoryTab === "global"
+                      ? "bg-[#0A84FF] text-white shadow-sm"
+                      : "text-[#8E8E93] hover:text-black dark:hover:text-white"
+                  }`}
+                >
+                  全局设定 (GLOBAL.md)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMemoryTab("daily")}
+                  className={`px-3 py-1 rounded-full transition ${
+                    memoryTab === "daily"
+                      ? "bg-[#0A84FF] text-white shadow-sm"
+                      : "text-[#8E8E93] hover:text-black dark:hover:text-white"
+                  }`}
+                >
+                  今日记忆流水
+                </button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs font-mono text-[#8E8E93] whitespace-pre-wrap leading-relaxed">
-                {memoryText || "今日暂无记录"}
-              </div>
+
+            {/* 内容区域 */}
+            <div className="flex-1 overflow-y-auto p-5 text-xs">
+              {memoryTab === "global" ? (
+                <div className="space-y-4">
+                  <div className="p-3.5 bg-[#0A84FF]/10 border border-[#0A84FF]/20 rounded-2xl text-[#0A84FF] leading-relaxed">
+                    <div className="font-bold text-xs flex items-center gap-1.5 mb-0.5">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>全局长期偏好记忆 (GLOBAL.md)</span>
+                    </div>
+                    <div>此处内容将在每次生成时自动注入 Agent 系统上下文。适合记录你的职业背景、编码规范、固定指令与全局事实。</div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-[#8E8E93]">
+                      <span>Markdown 编辑区域</span>
+                      <span className="font-mono text-[11px]">{globalMemoryText.length} 字符</span>
+                    </div>
+                    <textarea
+                      rows={12}
+                      value={globalMemoryText}
+                      onChange={e => setGlobalMemoryText(e.target.value)}
+                      placeholder="# Global Memory&#10;&#10;- 用户偏好简洁回答，跳过客套礼节。&#10;- 遇到 Python 绘图需求时自动使用 matplotlib 产出图片。&#10;- 常用工作区路径为 /var/minis/workspace。"
+                      className="w-full p-4 rounded-2xl bg-white dark:bg-[#141416] border border-[#E5E5EA] dark:border-[#2C2C2E] outline-none font-mono text-xs leading-relaxed text-black dark:text-white resize-none shadow-sm focus:border-[#0A84FF]"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setGlobalMemoryText("")}
+                      className="px-4 py-2 rounded-xl text-xs text-[#FF453A] hover:bg-[#FF453A]/10 transition font-medium"
+                    >
+                      清空内容
+                    </button>
+                    <div className="flex items-center gap-2">
+                      {globalMemSavedToast && (
+                        <span className="text-xs text-[#34C759] font-medium animate-in fade-in flex items-center gap-1">
+                          <Check className="w-3.5 h-3.5" /> 已保存至沙箱
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={isSavingGlobalMem}
+                        onClick={async () => {
+                          setIsSavingGlobalMem(true);
+                          try {
+                            await invoke("save_global_memory", { content: globalMemoryText });
+                            setGlobalMemSavedToast(true);
+                            setTimeout(() => setGlobalMemSavedToast(false), 2500);
+                          } catch (err) {
+                            alert(`保存失败: ${err}`);
+                          } finally {
+                            setIsSavingGlobalMem(false);
+                          }
+                        }}
+                        className="px-5 py-2.5 rounded-xl bg-[#0A84FF] text-white text-xs font-semibold hover:opacity-90 transition shadow-sm"
+                      >
+                        {isSavingGlobalMem ? "正在保存..." : "保存全局记忆"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="p-3.5 bg-black/5 dark:bg-white/5 border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl text-[#8E8E93] leading-relaxed">
+                    <div className="font-bold text-xs text-black dark:text-white flex items-center gap-1.5 mb-0.5">
+                      <Clock className="w-3.5 h-3.5 text-[#FF9500]" />
+                      <span>今日执行记忆流水 (/var/minis/memory/YYYY-MM-DD.md)</span>
+                    </div>
+                    <div>由 Agent 在调用 <code>memory_write</code> 时自动归档的重要事实、用户偏好与运行结论。</div>
+                  </div>
+
+                  <div className="bg-white dark:bg-[#141416] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs font-mono text-[#8E8E93] whitespace-pre-wrap leading-relaxed shadow-sm min-h-[260px] max-h-[460px] overflow-y-auto">
+                    {memoryText || "今日暂无新的记忆记录。"}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -4284,160 +4456,203 @@ export default function App() {
         />
       )}
 
-      {/* 消息右键菜单 (1:1 原版截图 117dbaf09febb772242d9c62928d86b3_2351b6.jpg & 4826c2638c76199f03ccffea383ba686_fadaf7.jpg) */}
+      {/* 1:1 原版消息右键 / 长按上下文菜单 (Apple HIG 毛玻璃极客质感) */}
       {messageContextMenu && (
         <div
-          style={{
-            top: Math.min(messageContextMenu.y, window.innerHeight - 200),
-            left: Math.min(messageContextMenu.x, window.innerWidth - 180),
-          }}
-          className="fixed w-44 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none space-y-0.5"
-          onClick={e => e.stopPropagation()}
+          className="fixed inset-0 z-50 bg-black/25 backdrop-blur-[2px] animate-in fade-in duration-100"
+          onClick={() => setMessageContextMenu(null)}
         >
-          {messageContextMenu.turn.role === "user" ? (
-            <>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(messageContextMenu.turn.content);
-                  setMessageContextMenu(null);
-                }}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-              >
-                <Copy className="w-3.5 h-3.5 text-[#0A84FF]" />
-                <span>复制</span>
-              </button>
-              <button
-                onClick={() => handleRetryFromUserTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-[#34C759]" />
-                <span>重试</span>
-              </button>
-              <button
-                onClick={() => handleEditUserTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-              >
-                <Edit3 className="w-3.5 h-3.5 text-[#FF9F0A]" />
-                <span>编辑</span>
-              </button>
-              <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
-              <button
-                onClick={() => {
-                  if (confirm("确定要截断删除此消息及后续所有问答吗？此操作不可撤销。")) {
-                    handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn);
-                  }
-                }}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>从此处删除</span>
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(messageContextMenu.turn.content);
-                  setMessageContextMenu(null);
-                }}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-              >
-                <Copy className="w-3.5 h-3.5 text-[#0A84FF]" />
-                <span>复制回答</span>
-              </button>
-              {messageContextMenu.turn.toolSteps.length > 0 && (
+          <div
+            style={{
+              top: Math.min(messageContextMenu.y, window.innerHeight - 320),
+              left: Math.min(messageContextMenu.x, window.innerWidth - 240),
+            }}
+            className="fixed w-56 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-2xl border border-black/10 dark:border-white/12 rounded-[22px] shadow-2xl p-1.5 z-50 text-xs select-none space-y-0.5 text-black dark:text-white"
+            onClick={e => e.stopPropagation()}
+          >
+            {messageContextMenu.turn.role === "user" ? (
+              <>
                 <button
                   onClick={() => {
-                    const info = messageContextMenu.turn.toolSteps.map(t => `${t.label}\n${t.detail}`).join("\n\n---\n\n");
-                    navigator.clipboard.writeText(info);
+                    navigator.clipboard.writeText(messageContextMenu.turn.content);
                     setMessageContextMenu(null);
                   }}
-                  className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
                 >
-                  <Terminal className="w-3.5 h-3.5 text-[#34C759]" />
-                  <span>拷贝工具信息</span>
+                  <span>复制问题全文</span>
+                  <Copy className="w-3.5 h-3.5 text-[#0A84FF]" />
                 </button>
-              )}
-              <button
-                onClick={() => handleRetryFromUserTurn(Math.max(0, messageContextMenu.turnIndex - 1), messageContextMenu.turn)}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-[#FF9F0A]" />
-                <span>从此处重新执行</span>
-              </button>
-              <button
-                onClick={() => {
-                  setMessageContextMenu(null);
-                  handleCompactMessages();
-                }}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-              >
-                <Layers className="w-3.5 h-3.5 text-[#FF9500]" />
-                <span>压缩此条以上上下文</span>
-              </button>
-              <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
-              <button
-                onClick={() => {
-                  if (confirm("确定要截断删除此消息及后续所有问答吗？此操作不可撤销。")) {
-                    handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn);
-                  }
-                }}
-                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>从此处删除</span>
-              </button>
-            </>
-          )}
+                <button
+                  onClick={() => handleEditUserTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>编辑此问题</span>
+                  <Edit3 className="w-3.5 h-3.5 text-[#FF9F0A]" />
+                </button>
+                <button
+                  onClick={() => handleRetryFromUserTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>重试本轮发送</span>
+                  <RotateCcw className="w-3.5 h-3.5 text-[#34C759]" />
+                </button>
+                <button
+                  onClick={() => handleForkFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>从此处分叉新会话</span>
+                  <GitFork className="w-3.5 h-3.5 text-[#AF52DE]" />
+                </button>
+                <div className="my-1 border-t border-black/5 dark:border-white/10" />
+                <button
+                  onClick={() => {
+                    setMessageContextMenu(null);
+                    handleCompactMessages();
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>压缩此条以上历史</span>
+                  <Layers className="w-3.5 h-3.5 text-[#FF9500]" />
+                </button>
+                <div className="my-1 border-t border-black/5 dark:border-white/10" />
+                <button
+                  onClick={() => {
+                    if (confirm("确定要截断删除此消息及后续所有问答吗？此操作不可撤销。")) {
+                      handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn);
+                    }
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#FF453A]/15 text-[#FF453A] transition flex items-center justify-between font-medium"
+                >
+                  <span>从此处截断删除</span>
+                  <Trash2 className="w-3.5 h-3.5 text-[#FF453A]" />
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(messageContextMenu.turn.content);
+                    setMessageContextMenu(null);
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>复制回答全文</span>
+                  <Copy className="w-3.5 h-3.5 text-[#0A84FF]" />
+                </button>
+                {messageContextMenu.turn.toolSteps.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const info = messageContextMenu.turn.toolSteps.map(t => `${t.label}\n${t.detail}`).join("\n\n---\n\n");
+                      navigator.clipboard.writeText(info);
+                      setMessageContextMenu(null);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                  >
+                    <span>拷贝工具调用信息</span>
+                    <Terminal className="w-3.5 h-3.5 text-[#34C759]" />
+                  </button>
+                )}
+                <button
+                  onClick={() => handleRetryFromUserTurn(Math.max(0, messageContextMenu.turnIndex - 1), messageContextMenu.turn)}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>重新生成此回答</span>
+                  <RotateCcw className="w-3.5 h-3.5 text-[#FF9F0A]" />
+                </button>
+                <button
+                  onClick={() => handleForkFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>从此处分叉新会话</span>
+                  <GitFork className="w-3.5 h-3.5 text-[#AF52DE]" />
+                </button>
+                <div className="my-1 border-t border-black/5 dark:border-white/10" />
+                <button
+                  onClick={() => {
+                    setMessageContextMenu(null);
+                    handleCompactMessages();
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+                >
+                  <span>压缩此条以上历史</span>
+                  <Layers className="w-3.5 h-3.5 text-[#FF9500]" />
+                </button>
+                <div className="my-1 border-t border-black/5 dark:border-white/10" />
+                <button
+                  onClick={() => {
+                    if (confirm("确定要截断删除此回答及后续所有问答吗？此操作不可撤销。")) {
+                      handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn);
+                    }
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#FF453A]/15 text-[#FF453A] transition flex items-center justify-between font-medium"
+                >
+                  <span>从此处截断删除</span>
+                  <Trash2 className="w-3.5 h-3.5 text-[#FF453A]" />
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
-      {/* 会话右键上下文菜单 (对标 Hermes PC) */}
+      {/* 1:1 原版侧边栏会话行右键上下文菜单 (Apple HIG 规范) */}
       {contextMenu && (
         <div
-          style={{
-            top: Math.min(contextMenu.y, window.innerHeight - 240),
-            left: Math.min(contextMenu.x, window.innerWidth - 190),
-          }}
-          className="fixed w-44 bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-2xl shadow-2xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs select-none space-y-0.5"
-          onClick={e => e.stopPropagation()}
+          className="fixed inset-0 z-50 bg-black/25 backdrop-blur-[2px] animate-in fade-in duration-100"
+          onClick={() => setContextMenu(null)}
         >
-          <button
-            onClick={() => startRenameSession(contextMenu.session)}
-            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+          <div
+            style={{
+              top: Math.min(contextMenu.y, window.innerHeight - 300),
+              left: Math.min(contextMenu.x, window.innerWidth - 230),
+            }}
+            className="fixed w-52 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-2xl border border-black/10 dark:border-white/12 rounded-[22px] shadow-2xl p-1.5 z-50 text-xs select-none space-y-0.5 text-black dark:text-white"
+            onClick={e => e.stopPropagation()}
           >
-            <Edit3 className="w-3.5 h-3.5 text-[#0A84FF]" />
-            <span>重命名会话</span>
-          </button>
-          <button
-            onClick={() => togglePinSession(contextMenu.session.id)}
-            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-          >
-            <Pin className="w-3.5 h-3.5 text-[#FF9F0A]" />
-            <span>{pinnedSessionIds.includes(contextMenu.session.id) ? "取消置顶" : "置顶会话"}</span>
-          </button>
-          <button
-            onClick={() => handleCompactSession(contextMenu.session.id)}
-            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-          >
-            <Layers className="w-3.5 h-3.5 text-[#32ADE6]" />
-            <span>压缩上下文</span>
-          </button>
-          <button
-            onClick={() => handleExportSession(contextMenu.session)}
-            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
-          >
-            <Download className="w-3.5 h-3.5 text-[#34C759]" />
-            <span>导出 Markdown</span>
-          </button>
-          <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
-          <button
-            onClick={() => handleDeleteSession(contextMenu.session.id)}
-            className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>删除会话</span>
-          </button>
+            <button
+              onClick={() => togglePinSession(contextMenu.session.id)}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+            >
+              <span>{pinnedSessionIds.includes(contextMenu.session.id) ? "取消置顶" : "置顶会话"}</span>
+              <Pin className="w-3.5 h-3.5 text-[#FF9F0A]" />
+            </button>
+            <button
+              onClick={() => startRenameSession(contextMenu.session)}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+            >
+              <span>重命名标题</span>
+              <Edit3 className="w-3.5 h-3.5 text-[#0A84FF]" />
+            </button>
+            <button
+              onClick={() => handleDuplicateSession(contextMenu.session)}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+            >
+              <span>克隆会话副本 (Duplicate)</span>
+              <Copy className="w-3.5 h-3.5 text-[#30B0C7]" />
+            </button>
+            <button
+              onClick={() => handleCompactSession(contextMenu.session.id)}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+            >
+              <span>压缩历史上下文</span>
+              <Layers className="w-3.5 h-3.5 text-[#FF9500]" />
+            </button>
+            <button
+              onClick={() => handleExportSession(contextMenu.session)}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"
+            >
+              <span>导出 Markdown 文档</span>
+              <Download className="w-3.5 h-3.5 text-[#34C759]" />
+            </button>
+            <div className="my-1 border-t border-black/5 dark:border-white/10" />
+            <button
+              onClick={() => handleDeleteSession(contextMenu.session.id)}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#FF453A]/15 text-[#FF453A] transition flex items-center justify-between font-medium"
+            >
+              <span>删除会话</span>
+              <Trash2 className="w-3.5 h-3.5 text-[#FF453A]" />
+            </button>
+          </div>
         </div>
       )}
 

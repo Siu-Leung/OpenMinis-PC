@@ -126,6 +126,38 @@ impl SessionStore {
         Ok(())
     }
 
+    /// 克隆/复制会话副本 (1:1 原版 Duplicate)
+    pub fn duplicate_session(&self, id: &str) -> Result<SessionRecord, String> {
+        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
+        let mut sessions = self.load_all_internal()?;
+        let target = sessions.iter().find(|s| s.id == id).cloned()
+            .ok_or_else(|| "未找到目标会话".to_string())?;
+
+        let new_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let new_title = format!("{} (副本)", target.title);
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let new_record = SessionRecord {
+            id: new_id.clone(),
+            title: new_title,
+            created_at: now,
+            message_count: target.message_count,
+            preview: target.preview,
+        };
+
+        // 复制历史消息文件
+        let src_file = self.sessions_dir.join(format!("{}.json", id));
+        let dst_file = self.sessions_dir.join(format!("{}.json", new_id));
+        if src_file.exists() {
+            let _ = std::fs::copy(&src_file, &dst_file);
+        }
+
+        sessions.insert(0, new_record.clone());
+        self.write_all_internal(&sessions)?;
+
+        Ok(new_record)
+    }
+
     /// 删除指定会话
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
         let _guard = self.lock.lock().map_err(|e| e.to_string())?;

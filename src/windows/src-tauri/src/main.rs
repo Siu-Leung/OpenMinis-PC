@@ -585,6 +585,11 @@ fn rename_session(state: State<'_, AppState>, id: String, title: String) -> Resu
 }
 
 #[tauri::command]
+fn duplicate_session(state: State<'_, AppState>, id: String) -> Result<session::SessionRecord, String> {
+    state.sessions.duplicate_session(&id)
+}
+
+#[tauri::command]
 async fn restart_sandbox(state: State<'_, AppState>) -> Result<sandbox::SandboxDiagnostics, String> {
     state.sandbox.restart_sandbox().await
 }
@@ -1131,6 +1136,7 @@ fn main() {
             search_sessions,
             delete_session,
             rename_session,
+            duplicate_session,
             restart_sandbox,
             // 定时任务
             list_tasks,
