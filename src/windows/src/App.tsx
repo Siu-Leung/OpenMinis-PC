@@ -110,9 +110,11 @@ interface AgentConfig {
   api_key: string;
   model: string;
   fallback_models?: string[];
+  fallback_targets?: { model: string; provider_url?: string; api_key?: string }[];
   system_prompt?: string;
   thinking_level?: string;
   thinking_budget?: number;
+  context_limit_tokens?: number;
 }
 
 interface SessionRecord {
@@ -215,6 +217,12 @@ interface AttachmentItem {
   isMedia: boolean;
   sizeStr: string;
   dataUrl: string;
+}
+
+interface QueuedPrompt {
+  id: string;
+  text: string;
+  attachments: AttachmentItem[];
 }
 
 interface EnvVarEntry {
@@ -707,6 +715,9 @@ export default function App() {
       fallback_models: fallbackTargets.map(t => t.model),
       fallback_targets: fallbackTargets,
       thinking_level: thinkingLevel,
+      context_limit_tokens: matchedGroup?.limit_context && matchedGroup.max_context && matchedGroup.max_context !== "unlimited"
+        ? Number.parseInt(matchedGroup.max_context, 10) * 1000
+        : undefined,
     };
 
     try {
@@ -1007,6 +1018,8 @@ export default function App() {
   // 附件与拖拽
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [promptQueue, setPromptQueue] = useState<QueuedPrompt[]>([]);
+  const promptQueueRef = useRef<QueuedPrompt[]>([]);
 
   // 展开与交互状态
   const [expandedThinking, setExpandedThinking] = useState<{ [key: number]: boolean }>({});
@@ -1083,7 +1096,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.20");
+  const [appVersion, setAppVersion] = useState("1.13.26");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -1509,8 +1522,27 @@ export default function App() {
     ]);
   };
 
-  const handleSend = async () => {
-    if ((!input.trim() && attachments.length === 0) || loading) return;
+  const handleSend = async (
+    queuedPrompt?: QueuedPrompt,
+    baseHistoryOverride?: ChatMessage[],
+    sessionIdOverride?: string,
+  ) => {
+    const promptText = queuedPrompt?.text ?? input.trim();
+    const promptAttachments = queuedPrompt?.attachments ?? attachments;
+    if (!promptText && promptAttachments.length === 0) return;
+
+    if (loading && !queuedPrompt) {
+      const queued: QueuedPrompt = {
+        id: crypto.randomUUID(),
+        text: promptText,
+        attachments: promptAttachments.map(item => ({ ...item })),
+      };
+      promptQueueRef.current = [...promptQueueRef.current, queued];
+      setPromptQueue(promptQueueRef.current);
+      setInput("");
+      setAttachments([]);
+      return;
+    }
 
     const currentProvider = providers.find(p => p.id === activeProviderId) || providers[0];
     if (!currentProvider || !activeModel) {
@@ -1519,23 +1551,23 @@ export default function App() {
     }
 
     // 解决 Bug 5 (会话重复条目)：如果当前是新会话，立即生成并绑定一个稳定的 Session ID！
-    let sid = currentSessionId;
+    let sid = sessionIdOverride || currentSessionId;
     if (!sid) {
       sid = "s_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
       setCurrentSessionId(sid);
     }
 
-    const userImages = attachments.filter(a => a.isMedia).map(a => a.dataUrl);
-    const userFiles = attachments.filter(a => !a.isMedia).map(a => ({ name: a.name, url: a.dataUrl, sizeStr: a.sizeStr }));
+    const userImages = promptAttachments.filter(a => a.isMedia).map(a => a.dataUrl);
+    const userFiles = promptAttachments.filter(a => !a.isMedia).map(a => ({ name: a.name, url: a.dataUrl, sizeStr: a.sizeStr }));
 
     const userMsg: ChatMessage = {
       role: "user",
-      content: input.trim(),
+      content: promptText,
       images: userImages.length > 0 ? userImages : undefined,
       files: userFiles.length > 0 ? userFiles : undefined,
     };
 
-    const newHistory = [...messages, userMsg];
+    const newHistory = [...(baseHistoryOverride ?? messages), userMsg];
     setMessages(newHistory);
     setInput("");
     setAttachments([]);
@@ -1587,14 +1619,19 @@ export default function App() {
       fallback_models: fallbackTargets.map(t => t.model),
       fallback_targets: fallbackTargets,
       thinking_level: matchedGroup?.enable_thinking ? (matchedGroup.thinking_effort || "medium") : thinkingLevel,
+      context_limit_tokens: matchedGroup?.limit_context && matchedGroup.max_context && matchedGroup.max_context !== "unlimited"
+        ? Number.parseInt(matchedGroup.max_context, 10) * 1000
+        : undefined,
     };
 
+    let completedHistory = newHistory;
     try {
       const updatedHistory = await invoke<ChatMessage[]>("run_agent_turn", {
         config,
         sessionId: sid,
         messages: newHistory,
       });
+      completedHistory = updatedHistory;
       setMessages(updatedHistory);
       loadSessions();
       loadUsage();
@@ -1608,6 +1645,12 @@ export default function App() {
       setStreamingText("");
       setStreamingThinking("");
       setAgentStatus("idle");
+      const nextPrompt = promptQueueRef.current[0];
+      if (nextPrompt) {
+        promptQueueRef.current = promptQueueRef.current.slice(1);
+        setPromptQueue(promptQueueRef.current);
+        queueMicrotask(() => handleSend(nextPrompt, completedHistory, sid));
+      }
     }
   };
 
@@ -2457,7 +2500,28 @@ export default function App() {
             </div>
           )}
 
-          <div className="max-w-3xl mx-auto bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-[26px] px-4 py-2.5 flex flex-col gap-2 focus-within:border-[#0A84FF] transition shadow-xl">
+          <div className="max-w-3xl mx-auto bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-[26px] px-4 py-2.5 flex flex-col gap-2 focus-within:border-[#0A84FF] shadow-xl min-h-[52px]">
+            {promptQueue.length > 0 && (
+              <div className="space-y-1 border-b border-[#E5E5EA] dark:border-[#2C2C2E] pb-2">
+                {promptQueue.map((queued, index) => (
+                  <div key={queued.id} className="flex items-center gap-2 text-[11px] text-[#8E8E93]">
+                    <span className="shrink-0 font-semibold text-[#0A84FF]">排队 {index + 1}</span>
+                    <span className="flex-1 truncate">{queued.text || `${queued.attachments.length} 个附件`}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        promptQueueRef.current = promptQueueRef.current.filter(item => item.id !== queued.id);
+                        setPromptQueue(promptQueueRef.current);
+                      }}
+                      className="p-0.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10"
+                      title="取消这条排队消息"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pt-1 border-b border-[#E5E5EA] dark:border-[#2C2C2E] pb-2">
                 {attachments.map(att => (
@@ -2577,18 +2641,30 @@ export default function App() {
 
               {/* 1:1 对标原版发送 / 停止生成按钮 */}
               {loading ? (
-                <button
-                  type="button"
-                  onClick={handleStopGeneration}
-                  className="w-7 h-7 rounded-full bg-[#FF453A] hover:bg-[#FF3B30] flex items-center justify-center text-white transition shrink-0 mb-0.5 shadow-md animate-pulse"
-                  title="停止当前生成"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                </button>
+                <div className="flex items-center gap-1 shrink-0 mb-0.5">
+                  {(input.trim() || attachments.length > 0) && (
+                    <button
+                      type="button"
+                      onClick={() => handleSend()}
+                      className="w-7 h-7 rounded-full bg-[#0A84FF] text-white flex items-center justify-center hover:opacity-90 transition shadow-sm"
+                      title="加入发送队列"
+                    >
+                      <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleStopGeneration}
+                    className="w-7 h-7 rounded-full bg-[#FF453A] hover:bg-[#FF3B30] flex items-center justify-center text-white transition shadow-md"
+                    title="停止当前生成"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                  </button>
+                </div>
               ) : (
                 <button
                   type="button"
-                  onClick={handleSend}
+                  onClick={() => handleSend()}
                   disabled={!input.trim() && attachments.length === 0}
                   className={`w-7 h-7 rounded-full flex items-center justify-center transition shrink-0 mb-0.5 ${
                     (input.trim() || attachments.length > 0)

@@ -92,6 +92,8 @@ pub struct AgentConfig {
     pub system_prompt: Option<String>,
     pub thinking_level: Option<String>,      // "off" | "low" | "medium" | "high" | "max"
     pub thinking_budget: Option<u32>,
+    #[serde(default)]
+    pub context_limit_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -286,7 +288,8 @@ impl AgentEngine {
 
                 let mut request_map = serde_json::Map::new();
                 request_map.insert("model".to_string(), json!(try_model));
-                request_map.insert("messages".to_string(), json!(Self::format_history_for_llm(&history)));
+                let request_history = Self::limit_history(&history, config.context_limit_tokens);
+                request_map.insert("messages".to_string(), json!(Self::format_history_for_llm(&request_history)));
                 request_map.insert("tools".to_string(), tools_schema.clone());
                 request_map.insert("stream".to_string(), json!(true));
                 request_map.insert("stream_options".to_string(), json!({ "include_usage": true }));
@@ -893,6 +896,44 @@ impl AgentEngine {
         ])
     }
 
+    fn limit_history(history: &[ChatMessage], limit_tokens: Option<u32>) -> Vec<ChatMessage> {
+        let Some(limit_tokens) = limit_tokens.filter(|value| *value > 0) else {
+            return history.to_vec();
+        };
+        let byte_budget = (limit_tokens as usize).saturating_mul(4);
+        let has_system = history.first().is_some_and(|message| message.role == "system");
+        let system = has_system.then(|| history[0].clone());
+        let mut kept = Vec::new();
+        let mut used = system.as_ref().map(|message| message.content.len()).unwrap_or(0);
+
+        for (reverse_index, message) in history.iter().rev().enumerate() {
+            if has_system && reverse_index == history.len().saturating_sub(1) {
+                continue;
+            }
+            let cost = message.content.len()
+                + message.thinking.as_ref().map(|value| value.len()).unwrap_or(0)
+                + 64;
+            if !kept.is_empty() && used.saturating_add(cost) > byte_budget {
+                break;
+            }
+            kept.push(message.clone());
+            used = used.saturating_add(cost);
+        }
+
+        kept.reverse();
+        while kept.first().is_some_and(|message| message.role == "tool") {
+            kept.remove(0);
+        }
+        if let Some(system) = system {
+            let mut result = Vec::with_capacity(kept.len() + 1);
+            result.push(system);
+            result.extend(kept);
+            result
+        } else {
+            kept
+        }
+    }
+
     pub fn format_history_for_llm(history: &[ChatMessage]) -> Vec<Value> {
         let mut out = Vec::new();
         for msg in history {
@@ -947,6 +988,59 @@ impl AgentEngine {
 
 /// 从 LLM 返回的原始错误 JSON 中提取友好的人类可读错误信息
 /// 处理 OpenAI/Anthropic/中转网关等常见错误格式, 提取 message 字段
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            thinking: None,
+            thinking_duration: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+            files: None,
+        }
+    }
+
+    #[test]
+    fn limited_history_keeps_system_and_newest_complete_messages() {
+        let history = vec![
+            message("system", "rules"),
+            message("user", &"a".repeat(80)),
+            message("assistant", &"b".repeat(80)),
+            message("user", "latest question"),
+        ];
+
+        let limited = AgentEngine::limit_history(&history, Some(32));
+
+        assert_eq!(limited.first().map(|m| m.role.as_str()), Some("system"));
+        assert_eq!(limited.last().map(|m| m.content.as_str()), Some("latest question"));
+        assert!(limited.len() < history.len());
+    }
+
+    #[test]
+    fn limited_history_does_not_start_with_orphaned_tool_message() {
+        let history = vec![
+            message("system", "rules"),
+            message("assistant", &"a".repeat(80)),
+            message("tool", "old tool result"),
+            message("user", "latest question"),
+        ];
+
+        let limited = AgentEngine::limit_history(&history, Some(32));
+        assert_ne!(limited.get(1).map(|m| m.role.as_str()), Some("tool"));
+    }
+
+    #[test]
+    fn unlimited_history_keeps_every_message() {
+        let history = vec![message("system", "rules"), message("user", "hello")];
+        assert_eq!(AgentEngine::limit_history(&history, None).len(), history.len());
+    }
+}
+
 fn extract_llm_error(err_text: &str) -> String {
     // 尝试解析 JSON 错误体, 提取 message / error.message 字段
     if let Ok(val) = serde_json::from_str::<Value>(err_text) {
