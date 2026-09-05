@@ -1,6 +1,6 @@
 [package]
 name = "openminis-windows"
-version = "1.13.0.18"
+version = "1.13.18"
 description = "OpenMinis Windows Desktop (v1.13.0.18) - Windows 测试版"
 authors = ["Siu-Leung", "OpenMinis Contributors"]
 edition = "2021"

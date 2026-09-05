@@ -937,7 +937,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.0.18");
+  const [appVersion, setAppVersion] = useState("1.13.18");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -3527,7 +3527,12 @@ export default function App() {
                           const htmlUrl = data.html_url || "https://github.com/Siu-Leung/OpenMinis-PC/releases";
                           setUpdateUrl(htmlUrl);
                           // 语义化版本号比较：逐段数字对比
-                          const parseVer = (v: string) => v.replace(/^v/, "").split(".").map((n) => parseInt(n || "0", 10));
+                          // normalize: 3-segment [1,13,18] -> 4-segment [1,13,0,18] (inject 0 as 3rd)
+                          const parseVer = (v: string) => {
+                            const parts = v.replace(/^v/, "").split(".").map((n) => parseInt(n || "0", 10));
+                            if (parts.length === 3) parts.splice(2, 0, 0); // [1,13,18] -> [1,13,0,18]
+                            return parts;
+                          };
                           const cmp = (a: number[], b: number[]) => {
                             for (let i = 0; i < Math.max(a.length, b.length); i++) {
                               const x = a[i] || 0, y = b[i] || 0;
