@@ -65,10 +65,11 @@ impl EnvVarManager {
         }
         let content = std::fs::read_to_string(&self.storage_path)
             .map_err(|e| format!("读取环境变量失败: {}", e))?;
-        let (entries, legacy) = crate::secret_store::decode_protected_or_legacy(
-            &content,
-            crate::secret_store::unprotect_for_current_user,
-        )?;
+        let (entries, legacy) =
+            crate::secret_store::decode_protected_or_legacy::<Vec<EnvVarEntry>, _>(
+                &content,
+                crate::secret_store::unprotect_for_current_user,
+            )?;
         if legacy {
             self.write_internal(&entries)?;
         }

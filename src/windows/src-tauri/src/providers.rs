@@ -117,10 +117,11 @@ impl ProviderManager {
         }
         let content = std::fs::read_to_string(&self.storage_path)
             .map_err(|e| format!("读取供应商存储失败: {}", e))?;
-        let (providers, legacy) = crate::secret_store::decode_protected_or_legacy(
-            &content,
-            crate::secret_store::unprotect_for_current_user,
-        )?;
+        let (providers, legacy) =
+            crate::secret_store::decode_protected_or_legacy::<Vec<ProviderRecord>, _>(
+                &content,
+                crate::secret_store::unprotect_for_current_user,
+            )?;
         if legacy {
             self.write_all_internal(&providers)?;
         }
