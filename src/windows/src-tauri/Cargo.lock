@@ -2234,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "openminis-windows"
-version = "1.13.23"
+version = "1.13.24"
 dependencies = [
  "chrono",
  "directories",

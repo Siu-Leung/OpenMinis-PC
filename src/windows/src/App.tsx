@@ -747,18 +747,33 @@ export default function App() {
   const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
   const [sandboxRestartToast, setSandboxRestartToast] = useState<string | null>(null);
 
+  // 全局菜单失焦自动取消 (解决痛点：点击其他任意空白处两处右键菜单自动消失)
   useEffect(() => {
-    const closeMenu = () => setContextMenu(null);
-    window.addEventListener("click", closeMenu);
-    return () => window.removeEventListener("click", closeMenu);
+    const closeAllContextMenus = () => {
+      setMessageContextMenu(null);
+      setContextMenu(null);
+    };
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeAllContextMenus();
+      }
+    };
+    window.addEventListener("click", closeAllContextMenus);
+    window.addEventListener("contextmenu", closeAllContextMenus);
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener("click", closeAllContextMenus);
+      window.removeEventListener("contextmenu", closeAllContextMenus);
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    };
   }, []);
 
   const handleContextMenu = (e: React.MouseEvent, session: SessionRecord) => {
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      x: Math.min(e.clientX + 8, window.innerWidth - 240),
+      y: Math.min(e.clientY + 4, window.innerHeight - 340),
       session,
     });
   };
@@ -803,6 +818,27 @@ export default function App() {
       a.click();
     } catch (err) {
       alert(`导出失败: ${err}`);
+    }
+  };
+
+  const handleRegenerateSessionTitle = async (session: SessionRecord) => {
+    setContextMenu(null);
+    try {
+      const msgs = await invoke<ChatMessage[]>("get_session_messages", { id: session.id });
+      const firstUser = msgs.find(m => m.role === "user");
+      if (!firstUser || !firstUser.content.trim()) return;
+      let clean = firstUser.content
+        .replace(/^(请帮我|帮我|请问|我想|给我|麻烦你|查一下|搜索|打开)/g, "")
+        .replace(/[？?！!。，,、\n]/g, " ")
+        .trim();
+      const words = clean.split(/\s+/).filter(Boolean);
+      let smart = words.slice(0, 3).join(" ");
+      if (smart.length > 14) smart = smart.slice(0, 14);
+      if (!smart) smart = "会话总结";
+      await invoke("rename_session", { id: session.id, title: smart });
+      loadSessions();
+    } catch (e) {
+      console.error("智能提炼标题失败:", e);
     }
   };
 
@@ -1582,7 +1618,7 @@ export default function App() {
           1. 会话主列表 (智能时间分段 + 搜索 + 1:1 原版质感)
       ========================================================================= */}
       {sidebarOpen && (
-        <aside className="w-64 border-r border-[#E5E5EA] dark:border-[#1C1C1E] flex flex-col shrink-0 bg-white/80 dark:bg-[#0C0C0E]/95 backdrop-blur-xl z-20 transition-all">
+        <aside className="w-[272px] border-r border-[#E5E5EA] dark:border-[#1C1C1E] flex flex-col shrink-0 bg-white/80 dark:bg-[#0C0C0E]/95 backdrop-blur-xl z-20 transition-all">
 
 
           {/* 顶栏控制 */}
@@ -1656,7 +1692,7 @@ export default function App() {
                             onContextMenu={e => handleContextMenu(e, s)}
                             className={`group flex items-center gap-2.5 px-3 py-2.5 mx-1.5 rounded-xl cursor-pointer transition select-none ${
                               isSelected
-                                ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm"
+                                ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm border-l-[3px] border-[#0A84FF]"
                                 : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
                             }`}
                           >
@@ -1739,7 +1775,7 @@ export default function App() {
                             onContextMenu={e => handleContextMenu(e, s)}
                             className={`group flex items-center gap-2.5 px-3 py-2.5 mx-1.5 rounded-xl cursor-pointer transition select-none ${
                               isSelected
-                                ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm"
+                                ? "bg-[#E5E5EA] dark:bg-[#1C1C1E] shadow-sm border-l-[3px] border-[#0A84FF]"
                                 : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
                             }`}
                           >
@@ -1838,44 +1874,65 @@ export default function App() {
             </div>
           </div>
         )}
-        {/* 顶栏 */}
-        <header className="h-[52px] border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between px-4 shrink-0 bg-white/70 dark:bg-[#000000]/80 backdrop-blur-md z-10">
-          <div className="flex items-center gap-2">
+        {/* 顶栏 (1:1 Apple 极客质感布局：左状态 + 中标题 + 右模型与操作) */}
+        <header className="h-[54px] border-b border-[#E5E5EA] dark:border-[#1C1C1E] flex items-center justify-between px-4 shrink-0 bg-white/85 dark:bg-[#000000]/85 backdrop-blur-xl z-10 select-none">
+          <div className="flex items-center gap-2.5 min-w-0">
             {!sidebarOpen && (
               <button
                 onClick={() => setSidebarOpen(true)}
-                className="p-1.5 rounded-lg text-[#8E8E93] hover:text-[#FFFFFF] hover:bg-[#1C1C1E] transition"
+                className="p-1.5 rounded-lg text-[#8E8E93] hover:text-black dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition"
                 title="展开侧边栏"
               >
                 <PanelLeft className="w-5 h-5" />
               </button>
             )}
+            {/* 沙箱就绪绿点 */}
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/5 text-[10px] font-mono text-[#8E8E93]">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#34C759] shadow-[0_0_6px_#34C759]" />
+              <span className="hidden md:inline">Sandbox Ready</span>
+            </div>
           </div>
 
-          {/* 顶栏中心：模型选择胶囊 (1:1 明确显式提供商与模型) */}
-          <div className="relative">
+          {/* 顶栏中心：当前会话标题与快捷重命名 */}
+          <div className="flex-1 flex items-center justify-center px-4 min-w-0">
+            <div
+              onClick={() => {
+                if (currentSessionId) {
+                  const s = sessions.find(x => x.id === currentSessionId);
+                  if (s) startRenameSession(s);
+                }
+              }}
+              className="group flex items-center gap-1.5 px-3 py-1 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer transition max-w-md truncate"
+              title="点击重命名当前会话标题"
+            >
+              <span className="font-semibold text-xs text-black dark:text-white truncate">
+                {currentSessionId
+                  ? (sessions.find(s => s.id === currentSessionId)?.title || "对话中")
+                  : "新对话"}
+              </span>
+              <Edit3 className="w-3 h-3 text-[#8E8E93] opacity-0 group-hover:opacity-100 transition shrink-0" />
+            </div>
+          </div>
+
+          {/* 顶栏右侧：模型选择胶囊 + 新建 + 更多 */}
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setShowModelPicker(!showModelPicker)}
-              className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-semibold text-[#1C1C1E] dark:text-[#FFFFFF] transition hover:border-[#0A84FF]/50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm text-xs font-semibold text-[#1C1C1E] dark:text-[#FFFFFF] transition hover:border-[#0A84FF]/50"
             >
               {modelGroupsState.groups.some(g => g.name === activeModel) ? (
-                <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#AF52DE]/15 text-[#AF52DE] font-bold shrink-0">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[#AF52DE]/15 text-[#AF52DE] font-bold shrink-0">
                   分组
                 </span>
               ) : currentProvider && (
-                <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#0A84FF]/10 text-[#0A84FF] font-bold shrink-0">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[#0A84FF]/10 text-[#0A84FF] font-bold shrink-0">
                   {currentProvider.name}
                 </span>
               )}
-              <span className="truncate max-w-[200px]">{activeModel || "选择模型"}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-[#8E8E93]" />
+              <span className="truncate max-w-[130px] font-mono text-[11px]">{activeModel || "选择模型"}</span>
+              <ChevronDown className="w-3 h-3 text-[#8E8E93]" />
             </button>
 
-
-          </div>
-
-          {/* 顶栏右侧：1:1 原版更多选项菜单按钮 */}
-          <div className="flex items-center gap-1.5 relative">
             <button
               onClick={() => {
                 setMessages([]);
@@ -2047,6 +2104,45 @@ export default function App() {
         {/* 消息滚动流 */}
         <div ref={scrollContainerRef} onScroll={handleMessageScroll} className="flex-1 overflow-y-auto px-4 py-6 relative">
           <div className="max-w-3xl mx-auto space-y-6">
+            {/* 1:1 原版空会话 Onboarding 工作台 (彻底消除开屏一片死白死黑的空洞感) */}
+            {messages.length === 0 && !loading && (
+              <div className="py-12 flex flex-col items-center justify-center text-center select-none animate-in fade-in duration-300">
+                <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-[#0A84FF] to-[#30B0C7] flex items-center justify-center shadow-2xl mb-4 text-white hover:scale-105 transition">
+                  <Sparkles className="w-8 h-8" />
+                </div>
+                <h1 className="text-2xl font-bold text-black dark:text-white tracking-tight">OpenMinis</h1>
+                <p className="text-xs text-[#8E8E93] mt-1.5 mb-8 max-w-md leading-relaxed">
+                  搭载独立 Alpine Linux (WSL2) 沙箱的极客 AI 助手，具备全功能终端、自动化浏览器与持久化记忆。
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl w-full text-left">
+                  {[
+                    { title: "Linux 终端执行", desc: "编写 Python、运行 Shell 脚本与测试", prompt: "在沙箱中写一个 Python 统计脚本并运行输出结果", icon: Terminal, color: "text-[#34C759]" },
+                    { title: "内置网页自动化", desc: "浏览网页、提取正文与获取快照", prompt: "使用浏览器打开 Hacker News 抓取今日头条", icon: Globe, color: "text-[#32ADE6]" },
+                    { title: "沙箱文件读写", desc: "在 /var/minis/workspace 构建项目", prompt: "在工作区创建一个项目说明文件 README.md", icon: FileText, color: "text-[#FF9500]" },
+                    { title: "记忆与知识库", desc: "持久化用户偏好与项目约定", prompt: "查看我当前保存在 GLOBAL.md 中的全局记忆", icon: Brain, color: "text-[#AF52DE]" },
+                  ].map((card, i) => (
+                    <div
+                      key={i}
+                      onClick={() => setInput(card.prompt)}
+                      className="p-4 rounded-2xl bg-white/80 dark:bg-[#1C1C1E]/80 border border-[#E5E5EA] dark:border-[#2C2C2E] hover:border-[#0A84FF]/60 hover:shadow-lg cursor-pointer transition flex items-start gap-3.5 group shadow-sm"
+                    >
+                      <div className="p-2.5 rounded-xl bg-black/5 dark:bg-white/5 shrink-0 group-hover:scale-105 transition">
+                        <card.icon className={`w-4 h-4 ${card.color}`} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-xs text-black dark:text-white flex items-center justify-between">
+                          <span>{card.title}</span>
+                          <span className="text-[10px] text-[#8E8E93] opacity-0 group-hover:opacity-100 transition">填入 ➔</span>
+                        </div>
+                        <div className="text-[11px] text-[#8E8E93] leading-normal mt-1">{card.desc}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {(() => {
             const turns = aggregateMessagesIntoTurns(messages);
 
@@ -4609,6 +4705,15 @@ export default function App() {
             className="fixed w-52 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-2xl border border-black/10 dark:border-white/12 rounded-[22px] shadow-2xl p-1.5 z-50 text-xs select-none space-y-0.5 text-black dark:text-white"
             onClick={e => e.stopPropagation()}
           >
+            <button
+              onClick={() => handleRegenerateSessionTitle(contextMenu.session)}
+              className="w-full text-left px-3 py-2 rounded-xl hover:bg-[#AF52DE]/10 transition flex items-center justify-between font-semibold text-[#AF52DE]"
+              title="根据首轮对话智能生成精炼标题"
+            >
+              <span>✨ 智能总结标题</span>
+              <Sparkles className="w-3.5 h-3.5 text-[#AF52DE]" />
+            </button>
+            <div className="my-1 border-t border-black/5 dark:border-white/10" />
             <button
               onClick={() => togglePinSession(contextMenu.session.id)}
               className="w-full text-left px-3 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition flex items-center justify-between font-medium"

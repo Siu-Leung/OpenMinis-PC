@@ -77,15 +77,15 @@ export function MarkdownImage({ src, alt, className }: MarkdownImageProps) {
   }
 
   if (error || !dataUrl) {
+    // 优雅降级：绝不渲染刺眼的大红报错框，改用原生极简灰色占位胶囊
     return (
-      <div className="my-3 p-3 rounded-2xl bg-[#FF453A]/10 border border-[#FF453A]/30 text-xs text-[#FF453A] space-y-1">
-        <div className="flex items-center gap-2 font-semibold">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>无法预览媒体: {alt || "媒体资源"}</span>
-        </div>
-        <div className="font-mono text-[11px] text-[#8E8E93] break-all">{src}</div>
-        <div className="text-[10px] text-[#8E8E93]">{error}</div>
-      </div>
+      <span
+        className="my-1.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/10 text-xs text-[#8E8E93] select-none"
+        title={error || "媒体未就绪"}
+      >
+        <ImageIcon className="w-3.5 h-3.5 text-[#8E8E93]" />
+        <span className="truncate max-w-xs">{alt || src || "媒体资源"}</span>
+      </span>
     );
   }
 
