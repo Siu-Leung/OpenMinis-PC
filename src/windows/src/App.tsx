@@ -478,9 +478,9 @@ export default function App() {
   const [sessionSearch, setSessionSearch] = useState("");
   const [showTopMenu, setShowTopMenu] = useState(false);
 
-  // 全功能设置模态窗口及其子页面路由
+  // 全功能设置模态窗口及其子页面路由 (全面对标原版 Settings 8 大分区)
   const [settingsView, setSettingsView] = useState<
-    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about" | "appearance" | "skills" | "soul" | "mounts" | "logs" | "backup" | "env_vars"
+    "none" | "root" | "providers" | "model_groups" | "usage" | "mcp" | "memory" | "browser_settings" | "rootfs" | "about" | "appearance" | "skills" | "soul" | "mounts" | "logs" | "backup" | "env_vars" | "scheduled" | "permissions" | "background" | "shared_folders"
   >("none");
 
   // 内置独立浏览器窗口状态
@@ -569,6 +569,47 @@ export default function App() {
   // 智能贴底与滚动位置
   const [isAtBottom, setIsAtBottom] = useState(true);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // 定时计划任务 (Scheduled Tasks)
+  const [scheduledTasks, setScheduledTasks] = useState<any[]>([]);
+  const [newTaskName, setNewTaskName] = useState("");
+  const [newTaskTime, setNewTaskTime] = useState("09:00");
+  const [newTaskPrompt, setNewTaskPrompt] = useState("");
+  const [newTaskRepeat, setNewTaskRepeat] = useState<string>("daily");
+
+  // 权限与安全开关 (Permissions)
+  const [permissionConfig, setPermissionConfig] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("openminis_permissions") || JSON.stringify({
+        allowMinisConfig: true,
+        allowOffload: true,
+        isolateHostDrives: true,
+      }));
+    } catch {
+      return { allowMinisConfig: true, allowOffload: true, isolateHostDrives: true };
+    }
+  });
+
+  // 后台与系统运行策略 (Background & System)
+  const [backgroundConfig, setBackgroundConfig] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("openminis_background") || JSON.stringify({
+        minimizeToTray: true,
+        keepSandboxHot: true,
+      }));
+    } catch {
+      return { minimizeToTray: true, keepSandboxHot: true };
+    }
+  });
+
+  const loadScheduledTasks = async () => {
+    try {
+      const res = await invoke<any[]>("list_tasks");
+      setScheduledTasks(res || []);
+    } catch (e) {
+      console.error("加载定时任务失败:", e);
+    }
+  };
 
   // 小电脑交互回调
   const handleComputerTakeover = (url: string) => {
@@ -2535,11 +2576,30 @@ export default function App() {
                   </div>
 
                   <div
+                    onClick={() => {
+                      loadScheduledTasks();
+                      setSettingsView("scheduled");
+                    }}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#FF9500] flex items-center justify-center text-white">
+                        <Clock className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">定时计划任务</div>
+                        <div className="text-xs text-[#8E8E93]">定时自动唤醒 Agent 执行批处理</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+
+                  <div
                     onClick={() => setSettingsView("mcp")}
                     className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                      <div className="w-8 h-8 rounded-lg bg-[#30B0C7] flex items-center justify-center text-white">
                         <Layers className="w-4 h-4" />
                       </div>
                       <div>
@@ -2595,7 +2655,7 @@ export default function App() {
                   </div>
 
                   <div
-                    onClick={() => invoke("open_sandbox_dir")}
+                    onClick={() => setSettingsView("shared_folders")}
                     className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
                   >
                     <div className="flex items-center gap-3">
@@ -2623,7 +2683,7 @@ export default function App() {
                       </div>
                       <div>
                         <div className="text-sm font-semibold text-black dark:text-white">挂载外部目录</div>
-                        <div className="text-xs text-[#8E8E93]">将 Windows 本地磁盘映射进沙箱 /var/minis/mounts/</div>
+                        <div className="text-xs text-[#8E8E93]">优先挂载非系统盘 Minis，支持选择任意本地文件夹</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -2639,7 +2699,7 @@ export default function App() {
                       </div>
                       <div>
                         <div className="text-sm font-semibold text-black dark:text-white">备份与恢复</div>
-                        <div className="text-xs text-[#8E8E93]">导出加密备份，或从备份中恢复</div>
+                        <div className="text-xs text-[#8E8E93]">导出 .minisbak 加密备份，或从备份中恢复</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -2647,9 +2707,75 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 分组 5: 关于 */}
+              {/* 分组 5: 权限与安全 (Permissions - 1:1 原版) */}
               <div>
-                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">关于</div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">权限与安全</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <div
+                    onClick={() => setSettingsView("permissions")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
+                        <Shield className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">系统与沙箱权限</div>
+                        <div className="text-xs text-[#8E8E93]">Offload 自动转储、配置自省与隔离安全策略</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 分组 6: 后台与系统 (Background & System - 1:1 原版) */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">后台与运行策略</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <div
+                    onClick={() => setSettingsView("background")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#FF9500] flex items-center justify-center text-white">
+                        <Power className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">后台与托盘运行策略</div>
+                        <div className="text-xs text-[#8E8E93]">系统托盘常驻保活与 WSL2 热运行配置</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 分组 7: 日志 (Logs) */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">日志与审计</div>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
+                  <div
+                    onClick={() => setSettingsView("logs")}
+                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#64D2FF] flex items-center justify-center text-white">
+                        <FileText className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-black dark:text-white">应用运行日志</div>
+                        <div className="text-xs text-[#8E8E93]">查看实时日志流、分级过滤与审计导出</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 分组 8: 关于 (About) */}
+              <div>
+                <div className="text-[12px] font-semibold text-[#8E8E93] px-3 mb-1.5 uppercase">关于与支持</div>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl overflow-hidden divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E]">
                   <div
                     onClick={() => setSettingsView("about")}
@@ -2660,24 +2786,8 @@ export default function App() {
                         <Info className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="text-sm font-semibold text-black dark:text-white">关于 Minis</div>
-                        <div className="text-xs text-[#8E8E93]">版本与项目信息</div>
-                      </div>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
-                  </div>
-
-                  <div
-                    onClick={() => setSettingsView("logs")}
-                    className="flex items-center justify-between p-3.5 hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] cursor-pointer transition"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-[#64D2FF] flex items-center justify-center text-white">
-                        <FileText className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-sm font-semibold text-black dark:text-white">应用日志</div>
-                        <div className="text-xs text-[#8E8E93]">查看与导出应用日志</div>
+                        <div className="text-sm font-semibold text-black dark:text-white">关于 OpenMinis</div>
+                        <div className="text-xs text-[#8E8E93]">版本信息、构建状态与环境自检</div>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
@@ -2704,11 +2814,11 @@ export default function App() {
                       <div className="w-8 h-8 rounded-lg bg-[#007AFF] flex items-center justify-center text-white">
                         <FileCode className="w-4 h-4" />
                       </div>
-                      <span className="text-sm font-semibold text-black dark:text-white">反馈问题</span>
+                      <span className="text-sm font-semibold text-black dark:text-white">提交 GitHub Issues</span>
                     </div>
                     <div className="flex items-center gap-1 text-[#8E8E93]">
                       <ExternalLink className="w-3.5 h-3.5" />
-                      <ChevronRight className="w-4 h-4" />
+                      <ChevronRight className="w-4 h-4 text-[#8E8E93]" />
                     </div>
                   </div>
                 </div>
@@ -3823,6 +3933,318 @@ export default function App() {
               <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs font-mono text-[#8E8E93] whitespace-pre-wrap leading-relaxed">
                 {memoryText || "今日暂无记录"}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4 个全新对标原版的设置子视图 */}
+
+      {/* 1. 定时计划任务 (Scheduled Tasks) */}
+      {settingsView === "scheduled" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden text-black dark:text-white">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold">定时计划任务</h2>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+              {/* 创建任务卡片 */}
+              <div className="p-4 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-3 shadow-sm">
+                <div className="font-bold text-sm">创建新定时任务</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="任务名称 (例如: 每日早报)"
+                    value={newTaskName}
+                    onChange={e => setNewTaskName(e.target.value)}
+                    className="px-3 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] outline-none"
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="time"
+                      value={newTaskTime}
+                      onChange={e => setNewTaskTime(e.target.value)}
+                      className="px-3 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] outline-none font-mono"
+                    />
+                    <select
+                      value={newTaskRepeat}
+                      onChange={e => setNewTaskRepeat(e.target.value)}
+                      className="px-2.5 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] outline-none"
+                    >
+                      <option value="daily">每天</option>
+                      <option value="weekdays">工作日</option>
+                      <option value="once">仅一次</option>
+                    </select>
+                  </div>
+                </div>
+                <textarea
+                  rows={2}
+                  placeholder="触发时自动发送给 Agent 的提示词 (例如: 检索今天的科技要闻并总结为 3 条要点)"
+                  value={newTaskPrompt}
+                  onChange={e => setNewTaskPrompt(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] outline-none resize-none"
+                />
+                <button
+                  onClick={async () => {
+                    if (!newTaskName.trim() || !newTaskPrompt.trim()) {
+                      alert("请填写任务名称与提示词");
+                      return;
+                    }
+                    try {
+                      await invoke("add_task", {
+                        task: {
+                          id: Math.random().toString(36).slice(2, 10),
+                          name: newTaskName.trim(),
+                          prompt: newTaskPrompt.trim(),
+                          time: newTaskTime,
+                          repeat: newTaskRepeat,
+                          enabled: true,
+                          last_run: null,
+                          days: [],
+                        }
+                      });
+                      setNewTaskName("");
+                      setNewTaskPrompt("");
+                      loadScheduledTasks();
+                    } catch (err) {
+                      alert(`创建任务失败: ${err}`);
+                    }
+                  }}
+                  className="w-full py-2.5 rounded-xl bg-[#0A84FF] text-white font-semibold hover:opacity-90 transition"
+                >
+                  添加定时计划
+                </button>
+              </div>
+
+              {/* 现有任务列表 */}
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold text-[#8E8E93] uppercase">已配置任务 ({scheduledTasks.length})</div>
+                {scheduledTasks.length === 0 ? (
+                  <div className="text-center py-8 text-[#8E8E93]">暂无计划任务</div>
+                ) : (
+                  scheduledTasks.map(task => (
+                    <div
+                      key={task.id}
+                      className="p-3.5 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between gap-3 shadow-sm"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm truncate">{task.name}</span>
+                          <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-[#0A84FF]/10 text-[#0A84FF] font-semibold">
+                            {task.time}
+                          </span>
+                          <span className="text-[10px] text-[#8E8E93] capitalize">
+                            {task.repeat}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-[#8E8E93] truncate mt-1">
+                          {task.prompt}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={async () => {
+                            await invoke("toggle_task", { id: task.id });
+                            loadScheduledTasks();
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
+                            task.enabled ? "bg-[#34C759]/20 text-[#34C759]" : "bg-black/5 dark:bg-white/10 text-[#8E8E93]"
+                          }`}
+                        >
+                          {task.enabled ? "已启用" : "已暂停"}
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (confirm(`确定删除任务 ${task.name} 吗？`)) {
+                              await invoke("remove_task", { id: task.id });
+                              loadScheduledTasks();
+                            }
+                          }}
+                          className="p-1.5 rounded-lg text-[#FF453A] hover:bg-[#FF453A]/10 transition"
+                          title="删除任务"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. 权限与安全管理 (Permissions) */}
+      {settingsView === "permissions" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-lg rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden text-black dark:text-white">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold">系统与沙箱权限</h2>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto text-xs">
+              <div className="bg-white dark:bg-[#242426] rounded-2xl divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm">
+                <div className="p-4 flex items-center justify-between">
+                  <div className="pr-4">
+                    <div className="font-bold text-sm">Context Offload 自动转储</div>
+                    <div className="text-[11px] text-[#8E8E93] mt-0.5">当命令输出超过 15,000 字符时，自动归档至沙箱 /var/minis/offloads/ 避免上下文窗口崩溃</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={permissionConfig.allowOffload}
+                    onChange={e => {
+                      const next = { ...permissionConfig, allowOffload: e.target.checked };
+                      setPermissionConfig(next);
+                      localStorage.setItem("openminis_permissions", JSON.stringify(next));
+                    }}
+                    className="w-5 h-5 accent-[#0A84FF] rounded cursor-pointer"
+                  />
+                </div>
+
+                <div className="p-4 flex items-center justify-between">
+                  <div className="pr-4">
+                    <div className="font-bold text-sm">允许 minis-config 程序化改配</div>
+                    <div className="text-[11px] text-[#8E8E93] mt-0.5">允许大模型根据需要自主配置提供商模型与环境变量，所有变更受安全审计保护</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={permissionConfig.allowMinisConfig}
+                    onChange={e => {
+                      const next = { ...permissionConfig, allowMinisConfig: e.target.checked };
+                      setPermissionConfig(next);
+                      localStorage.setItem("openminis_permissions", JSON.stringify(next));
+                    }}
+                    className="w-5 h-5 accent-[#0A84FF] rounded cursor-pointer"
+                  />
+                </div>
+
+                <div className="p-4 flex items-center justify-between">
+                  <div className="pr-4">
+                    <div className="font-bold text-sm">宿主磁盘零泄漏隔离保护</div>
+                    <div className="text-[11px] text-[#8E8E93] mt-0.5">沙箱屏蔽 /mnt 默认全盘挂载，Agent 仅可读写你显式指定的挂载目录</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={permissionConfig.isolateHostDrives}
+                    onChange={e => {
+                      const next = { ...permissionConfig, isolateHostDrives: e.target.checked };
+                      setPermissionConfig(next);
+                      localStorage.setItem("openminis_permissions", JSON.stringify(next));
+                    }}
+                    className="w-5 h-5 accent-[#0A84FF] rounded cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. 后台与系统运行策略 (Background) */}
+      {settingsView === "background" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-lg rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden text-black dark:text-white">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold">后台与系统运行策略</h2>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto text-xs">
+              <div className="bg-white dark:bg-[#242426] rounded-2xl divide-y divide-[#E5E5EA] dark:divide-[#2C2C2E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm">
+                <div className="p-4 flex items-center justify-between">
+                  <div className="pr-4">
+                    <div className="font-bold text-sm">关闭窗口时最小化到系统托盘</div>
+                    <div className="text-[11px] text-[#8E8E93] mt-0.5">点击右上角关闭时不杀死进程，保证后台任务持续执行</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={backgroundConfig.minimizeToTray}
+                    onChange={e => {
+                      const next = { ...backgroundConfig, minimizeToTray: e.target.checked };
+                      setBackgroundConfig(next);
+                      localStorage.setItem("openminis_background", JSON.stringify(next));
+                    }}
+                    className="w-5 h-5 accent-[#0A84FF] rounded cursor-pointer"
+                  />
+                </div>
+
+                <div className="p-4 flex items-center justify-between">
+                  <div className="pr-4">
+                    <div className="font-bold text-sm">保持 WSL2 沙箱常驻热运行</div>
+                    <div className="text-[11px] text-[#8E8E93] mt-0.5">防止宿主系统自动冻结 Alpine 实例，保证命令行工具调用秒级唤醒</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={backgroundConfig.keepSandboxHot}
+                    onChange={e => {
+                      const next = { ...backgroundConfig, keepSandboxHot: e.target.checked };
+                      setBackgroundConfig(next);
+                      localStorage.setItem("openminis_background", JSON.stringify(next));
+                    }}
+                    className="w-5 h-5 accent-[#0A84FF] rounded cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. 沙箱共享文件夹导航 (Shared Folders) */}
+      {settingsView === "shared_folders" && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] w-full max-w-xl rounded-[28px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden text-black dark:text-white">
+            <div className="px-6 py-4 border-b border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between bg-white dark:bg-[#1C1C1E]">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-bold">沙箱共享文件夹</h2>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-3 overflow-y-auto text-xs">
+              {[
+                { name: "工作区目录 (Workspace)", path: "workspace", desc: "Agent 工作脚本、生成代码与处理中的文件 (/var/minis/workspace)", color: "text-[#0A84FF]" },
+                { name: "媒体与快照 (Attachments)", path: "attachments", desc: "生成的图像、音频、图表与网页截屏快照 (/var/minis/attachments)", color: "text-[#AF52DE]" },
+                { name: "长效共享存储 (Shared)", path: "shared", desc: "跨会话持久保留的研究报告与大型数据集 (/var/minis/shared)", color: "text-[#34C759]" },
+                { name: "上下文转储 (Offloads)", path: "offloads", desc: "超大终端输出与大型执行日志缓存 (/var/minis/offloads)", color: "text-[#FF9500]" },
+                { name: "记忆知识库 (Memory)", path: "memory", desc: "持久化记忆流与全局设定文件 (/var/minis/memory)", color: "text-[#FFCC00]" },
+                { name: "主存储挂载 (Minis Root)", path: "mounts/Minis", desc: "非系统盘宿主映射主工作空间 (/var/minis/mounts/Minis)", color: "text-[#32ADE6]" },
+              ].map(folder => (
+                <div
+                  key={folder.path}
+                  className="p-3.5 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between shadow-sm"
+                >
+                  <div className="pr-3">
+                    <div className={`font-bold text-sm ${folder.color}`}>{folder.name}</div>
+                    <div className="text-[11px] text-[#8E8E93] mt-0.5 font-mono">{folder.desc}</div>
+                  </div>
+                  <button
+                    onClick={() => invoke("open_sandbox_dir", { subpath: folder.path })}
+                    className="px-3 py-1.5 rounded-xl bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 text-xs font-semibold transition shrink-0"
+                  >
+                    在 Explorer 打开
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         </div>

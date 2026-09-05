@@ -1,6 +1,17 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Image as ImageIcon, ExternalLink, Download, Maximize2, X, AlertCircle } from "lucide-react";
+import {
+  Image as ImageIcon,
+  ExternalLink,
+  Download,
+  Maximize2,
+  X,
+  AlertCircle,
+  Volume2,
+  Film,
+  Music,
+  Play
+} from "lucide-react";
 
 interface MarkdownImageProps {
   src?: string;
@@ -14,14 +25,19 @@ export function MarkdownImage({ src, alt, className }: MarkdownImageProps) {
   const [error, setError] = useState<string | null>(null);
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
+  // 判断媒体类型
+  const cleanUrl = (src || "").toLowerCase().split("?")[0].split("#")[0];
+  const isAudio = cleanUrl.endsWith(".mp3") || cleanUrl.endsWith(".wav") || cleanUrl.endsWith(".m4a") || cleanUrl.endsWith(".ogg") || cleanUrl.endsWith(".flac") || cleanUrl.endsWith(".aac");
+  const isVideo = cleanUrl.endsWith(".mp4") || cleanUrl.endsWith(".mov") || cleanUrl.endsWith(".webm") || cleanUrl.endsWith(".m4v");
+
   useEffect(() => {
     if (!src) {
-      setError("未指定图片路径");
+      setError("未指定媒体路径");
       setLoading(false);
       return;
     }
 
-    if (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("data:image/")) {
+    if (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("data:")) {
       setDataUrl(src);
       setLoading(false);
       return;
@@ -40,7 +56,7 @@ export function MarkdownImage({ src, alt, className }: MarkdownImageProps) {
       })
       .catch((err) => {
         if (isMounted) {
-          console.error("加载图片失败:", err);
+          console.error("加载媒体失败:", err);
           setError(String(err));
           setLoading(false);
         }
@@ -53,9 +69,9 @@ export function MarkdownImage({ src, alt, className }: MarkdownImageProps) {
 
   if (loading) {
     return (
-      <div className="my-3 inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs text-[#8E8E93] animate-pulse">
-        <ImageIcon className="w-4 h-4 text-[#0A84FF] animate-spin" />
-        <span>正在加载快照与图像...</span>
+      <div className="my-3 inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-black/5 dark:bg-white/5 border border-[#E5E5EA] dark:border-[#2C2C2E] text-xs text-[#8E8E93] animate-pulse select-none">
+        {isAudio ? <Music className="w-4 h-4 text-[#FF9500] animate-bounce" /> : isVideo ? <Film className="w-4 h-4 text-[#AF52DE] animate-pulse" /> : <ImageIcon className="w-4 h-4 text-[#0A84FF] animate-spin" />}
+        <span>正在加载媒体资源...</span>
       </div>
     );
   }
@@ -65,7 +81,7 @@ export function MarkdownImage({ src, alt, className }: MarkdownImageProps) {
       <div className="my-3 p-3 rounded-2xl bg-[#FF453A]/10 border border-[#FF453A]/30 text-xs text-[#FF453A] space-y-1">
         <div className="flex items-center gap-2 font-semibold">
           <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>无法预览图片: {alt || "图像"}</span>
+          <span>无法预览媒体: {alt || "媒体资源"}</span>
         </div>
         <div className="font-mono text-[11px] text-[#8E8E93] break-all">{src}</div>
         <div className="text-[10px] text-[#8E8E93]">{error}</div>
@@ -73,6 +89,55 @@ export function MarkdownImage({ src, alt, className }: MarkdownImageProps) {
     );
   }
 
+  // --- 音频内嵌播放器 (1:1 原版质感) ---
+  if (isAudio) {
+    return (
+      <div className="my-3 p-3 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] shadow-sm max-w-lg space-y-2 select-none">
+        <div className="flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2 text-black dark:text-white font-medium truncate">
+            <Volume2 className="w-4 h-4 text-[#FF9500] shrink-0" />
+            <span className="truncate">{alt || src?.split("/").pop() || "Audio Playback"}</span>
+          </div>
+          <a
+            href={dataUrl}
+            download={alt || "audio.mp3"}
+            className="p-1 text-[#8E8E93] hover:text-black dark:hover:text-white rounded hover:bg-black/5 dark:hover:bg-white/10 transition"
+            title="下载音频"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </a>
+        </div>
+        <audio controls src={dataUrl} className="w-full h-9 rounded-lg" />
+      </div>
+    );
+  }
+
+  // --- 视频内嵌播放器 (1:1 原版质感) ---
+  if (isVideo) {
+    return (
+      <div className="my-3 rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#2C2C2E] bg-black shadow-md max-w-xl">
+        {alt && (
+          <div className="px-3.5 py-2 text-xs font-medium text-white/90 bg-[#1C1C1E] border-b border-[#2C2C2E] flex items-center justify-between">
+            <div className="flex items-center gap-2 truncate">
+              <Film className="w-4 h-4 text-[#AF52DE]" />
+              <span className="truncate">{alt}</span>
+            </div>
+            <a
+              href={dataUrl}
+              download={alt || "video.mp4"}
+              className="p-1 text-[#8E8E93] hover:text-white rounded hover:bg-white/10 transition"
+              title="下载视频"
+            >
+              <Download className="w-3.5 h-3.5" />
+            </a>
+          </div>
+        )}
+        <video controls src={dataUrl} className="w-full max-h-[460px] object-contain bg-black" />
+      </div>
+    );
+  }
+
+  // --- 原生图片渲染 (带全屏灯箱放大与下载) ---
   return (
     <>
       <div className="my-3 group relative inline-block max-w-full rounded-2xl overflow-hidden border border-[#E5E5EA] dark:border-[#2C2C2E] bg-black/5 dark:bg-[#1C1C1E] shadow-sm">
@@ -96,11 +161,11 @@ export function MarkdownImage({ src, alt, className }: MarkdownImageProps) {
             onClick={() => {
               const a = document.createElement("a");
               a.href = dataUrl;
-              a.download = alt || "screenshot.png";
+              a.download = alt || "media.png";
               a.click();
             }}
             className="p-1.5 hover:bg-white/20 rounded-lg transition"
-            title="保存图片到本地"
+            title="保存到本地"
           >
             <Download className="w-3.5 h-3.5" />
           </button>
