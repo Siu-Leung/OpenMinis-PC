@@ -158,6 +158,10 @@ export function MinisComputer({
                       alt="Live Page"
                       className="w-full h-full object-cover object-top"
                     />
+                  ) : computerState.outputSnippet ? (
+                    <div className="w-full h-full overflow-y-auto p-2 text-[10px] leading-relaxed text-[#D1D1D6] font-mono whitespace-pre-wrap">
+                      {computerState.outputSnippet}
+                    </div>
                   ) : (
                     <div className="text-center p-3 space-y-1">
                       <Loader2 className="w-5 h-5 animate-spin text-[#32ADE6] mx-auto" />

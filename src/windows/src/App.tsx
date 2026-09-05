@@ -220,6 +220,12 @@ interface EnvVarEntry {
   note?: string;
 }
 
+const formatDisplayVersion = (version: string) => {
+  const parts = version.replace(/^v/, "").split(".").map(n => parseInt(n || "0", 10));
+  if (parts.length === 3) parts.splice(2, 0, 0);
+  return parts.join(".");
+};
+
 const AVATAR_COLORS = [
   { bg: "bg-[#E1F5FE]", text: "text-[#0288D1]" },
   { bg: "bg-[#EDE7F6]", text: "text-[#5E35B1]" },
@@ -937,7 +943,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.18");
+  const [appVersion, setAppVersion] = useState("1.13.19");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -1062,6 +1068,8 @@ export default function App() {
             toolType: "browser",
             title: realUrl || "浏览网页",
             commandOrUrl: realUrl || "https://www.baidu.com",
+            outputSnippet: undefined,
+            previewImageUrl: undefined,
           });
         } else if (toolName === "shell_execute") {
           setComputerState({
@@ -1097,6 +1105,8 @@ export default function App() {
               const imgMatch = String(parsed.output).match(/minis:\/\/attachments\/([\w\-\.]+\.(png|jpg|jpeg|gif|webp))/i);
               if (imgMatch) {
                 next.previewImageUrl = `minis://attachments/${imgMatch[1]}`;
+              } else if (prev.toolType === "browser") {
+                next.previewImageUrl = undefined;
               }
               return next;
             });
@@ -3475,7 +3485,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 1.13.0.18 (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 {formatDisplayVersion(appVersion)} (Windows 测试版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3519,7 +3529,7 @@ export default function App() {
                       setUpdateUrl("");
                       try {
                         const curVerRaw = await invoke<string>("get_app_version").catch(() => "");
-                        const curVer = curVerRaw ? `v${curVerRaw}` : `v${appVersion}`;
+                        const curVer = curVerRaw ? `v${formatDisplayVersion(curVerRaw)}` : `v${formatDisplayVersion(appVersion)}`;
                         const res = await fetch("https://api.github.com/repos/Siu-Leung/OpenMinis-PC/releases/latest");
                         if (res.ok) {
                           const data = await res.json();
@@ -3579,7 +3589,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：{appVersion} (Windows 测试版)
+                  当前版本：{formatDisplayVersion(appVersion)} (Windows 测试版)
                 </div>
               </div>
             </div>
