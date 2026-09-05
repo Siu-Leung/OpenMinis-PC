@@ -17,6 +17,7 @@ mod offloads;
 mod providers;
 mod sandbox;
 mod scheduler;
+mod secret_store;
 mod session;
 mod skills;
 mod soul;

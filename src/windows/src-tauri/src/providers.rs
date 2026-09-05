@@ -117,14 +117,22 @@ impl ProviderManager {
         }
         let content = std::fs::read_to_string(&self.storage_path)
             .map_err(|e| format!("读取供应商存储失败: {}", e))?;
-        serde_json::from_str(&content).map_err(|e| format!("解析供应商存储失败: {}", e))
+        let (providers, legacy) = crate::secret_store::decode_protected_or_legacy(
+            &content,
+            crate::secret_store::unprotect_for_current_user,
+        )?;
+        if legacy {
+            self.write_all_internal(&providers)?;
+        }
+        Ok(providers)
     }
 
     fn write_all_internal(&self, providers: &[ProviderRecord]) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(providers)
-            .map_err(|e| format!("序列化供应商失败: {}", e))?;
-        std::fs::write(&self.storage_path, json)
-            .map_err(|e| format!("写入供应商存储失败: {}", e))?;
-        Ok(())
+        let json = crate::secret_store::encode_protected(
+            &providers,
+            crate::secret_store::protect_for_current_user,
+        )?;
+        crate::secret_store::atomic_write(&self.storage_path, json.as_bytes())
+            .map_err(|e| format!("写入供应商存储失败: {}", e))
     }
 }

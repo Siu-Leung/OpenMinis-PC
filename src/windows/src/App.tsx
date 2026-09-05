@@ -512,24 +512,14 @@ export default function App() {
     headlessDefault: true,
   });
 
-  // 供应商状态 (后端统一存储, localStorage 仅作迁移源与缓存兜底)
-  const [providers, setProviders] = useState<Provider[]>(() => {
-    const saved = localStorage.getItem("openminis_providers_v4_clean");
-    return saved ? JSON.parse(saved) : [];
-  });
+  // 供应商状态由后端 DPAPI 存储负责持久化；localStorage 仅用于一次性旧数据迁移。
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [providersLoaded, setProvidersLoaded] = useState(false);
   const [activeProviderId, setActiveProviderId] = useState<string>(() => {
     return localStorage.getItem("openminis_active_provider_id_v4") || "";
   });
   const [activeModel, setActiveModel] = useState<string>(() => {
-    const saved = localStorage.getItem("openminis_active_model_v4");
-    if (saved) return saved;
-    try {
-      const savedProviders: Provider[] = JSON.parse(localStorage.getItem("openminis_providers_v4_clean") || "[]");
-      if (savedProviders.length > 0 && savedProviders[0].models.length > 0) {
-        return savedProviders[0].models[0];
-      }
-    } catch {}
-    return "deepseek-chat";
+    return localStorage.getItem("openminis_active_model_v4") || "deepseek-chat";
   });
   const [thinkingLevel, setThinkingLevel] = useState<string>(() => {
     return localStorage.getItem("openminis_thinking_level") || "high";
@@ -1104,7 +1094,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.30");
+  const [appVersion, setAppVersion] = useState("1.13.31");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -1443,30 +1433,51 @@ export default function App() {
     }
   };
 
+  const providerSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const providerSaveSequenceRef = useRef(0);
   const saveProviders = (newProviders: Provider[]) => {
+    const sequence = ++providerSaveSequenceRef.current;
     setProviders(newProviders);
-    localStorage.setItem("openminis_providers_v4_clean", JSON.stringify(newProviders));
-    // 同步到后端统一存储 (供 Agent 工具读写)
-    invoke("save_providers", { providers: newProviders }).catch(() => {});
+    providerSaveQueueRef.current = providerSaveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          await invoke<void>("save_providers", { providers: newProviders });
+          if (sequence === providerSaveSequenceRef.current) {
+            setProviders(newProviders);
+          }
+        } catch (error) {
+          console.error("保存供应商失败:", error);
+          if (sequence === providerSaveSequenceRef.current) {
+            alert(`保存供应商失败: ${error}`);
+            await loadProviders();
+          }
+        }
+      });
   };
 
-  // 从后端加载供应商, 并迁移 localStorage 旧数据
+  // 从后端加载供应商，并将旧 localStorage 明文数据一次性迁移到 DPAPI 存储。
   const loadProviders = async () => {
     try {
       const backend = await invoke<Provider[]>("list_providers");
       if (backend && backend.length > 0) {
-        // 后端已有数据, 以后端为准
         setProviders(backend);
-        localStorage.setItem("openminis_providers_v4_clean", JSON.stringify(backend));
+        localStorage.removeItem("openminis_providers_v4_clean");
       } else {
-        // 后端为空, 迁移 localStorage 旧数据到后端
-        const local = JSON.parse(localStorage.getItem("openminis_providers_v4_clean") || "[]");
-        if (local.length > 0) {
-          await invoke("save_providers", { providers: local });
+        const legacyRaw = localStorage.getItem("openminis_providers_v4_clean");
+        const legacy: Provider[] = legacyRaw ? JSON.parse(legacyRaw) : [];
+        if (legacy.length > 0) {
+          await invoke("save_providers", { providers: legacy });
+          setProviders(legacy);
+          localStorage.removeItem("openminis_providers_v4_clean");
+        } else {
+          setProviders([]);
         }
       }
+      setProvidersLoaded(true);
     } catch (e) {
       console.error("加载后端供应商失败:", e);
+      alert(`加载供应商失败，已停止发送和编辑以保护现有凭据: ${e}`);
     }
   };
 
@@ -1563,6 +1574,7 @@ export default function App() {
     const promptText = queuedPrompt?.text ?? input.trim();
     const promptAttachments = queuedPrompt?.attachments ?? attachments;
     if (!promptText && promptAttachments.length === 0) return;
+    if (!providersLoaded) return;
 
     if (loading && !queuedPrompt) {
       const queued: QueuedPrompt = {
@@ -3491,7 +3503,7 @@ export default function App() {
 
 
       {/* 现有子模态框 */}
-      {settingsView === "providers" && (
+      {settingsView === "providers" && providersLoaded && (
         <ProviderManager
           providers={providers}
           activeProviderId={activeProviderId}

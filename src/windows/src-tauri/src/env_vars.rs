@@ -38,11 +38,8 @@ impl EnvVarManager {
 
     pub fn save_env_vars(&self, entries: Vec<EnvVarEntry>) -> Result<(), String> {
         let _guard = self.lock.lock().map_err(|e| e.to_string())?;
-        let json = serde_json::to_string_pretty(&entries)
-            .map_err(|e| format!("序列化环境变量失败: {}", e))?;
-        std::fs::write(&self.storage_path, json)
-            .map_err(|e| format!("写入环境变量失败: {}", e))?;
-        Ok(())
+        validate_entries(&entries)?;
+        self.write_internal(&entries)
     }
 
     /// 生成注入到沙箱 shell 的环境变量前缀 (export KEY='VALUE'; ...)
@@ -52,10 +49,10 @@ impl EnvVarManager {
         };
         let mut prefix = String::new();
         for e in entries {
-            if e.key.trim().is_empty() {
+            if !is_valid_env_key(&e.key) {
                 continue;
             }
-            let safe_key = e.key.trim().replace('\'', "");
+            let safe_key = &e.key;
             let safe_val = e.value.replace('\'', "'\\''");
             prefix.push_str(&format!("export {}='{}'; ", safe_key, safe_val));
         }
@@ -68,6 +65,55 @@ impl EnvVarManager {
         }
         let content = std::fs::read_to_string(&self.storage_path)
             .map_err(|e| format!("读取环境变量失败: {}", e))?;
-        serde_json::from_str(&content).map_err(|e| format!("解析环境变量失败: {}", e))
+        let (entries, legacy) = crate::secret_store::decode_protected_or_legacy(
+            &content,
+            crate::secret_store::unprotect_for_current_user,
+        )?;
+        if legacy {
+            self.write_internal(&entries)?;
+        }
+        Ok(entries)
+    }
+
+    fn write_internal(&self, entries: &[EnvVarEntry]) -> Result<(), String> {
+        let json = crate::secret_store::encode_protected(
+            &entries,
+            crate::secret_store::protect_for_current_user,
+        )?;
+        crate::secret_store::atomic_write(&self.storage_path, json.as_bytes())
+            .map_err(|e| format!("写入环境变量失败: {}", e))
+    }
+}
+
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn validate_entries(entries: &[EnvVarEntry]) -> Result<(), String> {
+    if let Some(entry) = entries.iter().find(|entry| !is_valid_env_key(&entry.key)) {
+        return Err(format!("环境变量名无效: {}", entry.key));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_shell_syntax_in_environment_variable_names() {
+        let entries = vec![EnvVarEntry {
+            key: "TOKEN; touch /tmp/pwned".to_string(),
+            value: "secret".to_string(),
+            note: String::new(),
+        }];
+
+        assert!(validate_entries(&entries).is_err());
+        assert!(is_valid_env_key("OPENMINIS_TOKEN"));
+        assert!(!is_valid_env_key(" OPENMINIS_TOKEN"));
+        assert!(!is_valid_env_key("OPENMINIS_TOKEN "));
+        assert!(!is_valid_env_key("1TOKEN"));
     }
 }

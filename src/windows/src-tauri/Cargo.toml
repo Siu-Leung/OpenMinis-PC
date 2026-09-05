@@ -1,7 +1,7 @@
 [package]
 name = "openminis-windows"
-version = "1.13.30"
-description = "OpenMinis Windows Desktop (v1.13.0.30) - OpenMinis Windows 体验版"
+version = "1.13.31"
+description = "OpenMinis Windows Desktop (v1.13.0.31) - OpenMinis Windows 体验版"
 authors = ["Siu-Leung", "OpenMinis Contributors"]
 edition = "2021"
 
@@ -27,5 +27,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_SystemInformation",
     "Win32_System_DataExchange",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
     "Win32_Foundation"
 ] }
