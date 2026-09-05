@@ -73,7 +73,7 @@ export function UnifiedModelPicker({
         [key]: {
           ok: res.supports_text,
           ms: res.latency_ms,
-          err: res.error || (res.supports_vision ? "图文支持" : "纯文本"),
+          err: res.error || (res.supports_text ? `${res.latency_ms} ms` : "连接失败"),
         },
       }));
     } catch (err: any) {

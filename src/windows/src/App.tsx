@@ -747,23 +747,28 @@ export default function App() {
   const [isRestartingSandbox, setIsRestartingSandbox] = useState(false);
   const [sandboxRestartToast, setSandboxRestartToast] = useState<string | null>(null);
 
-  // 全局菜单失焦自动取消 (解决痛点：点击其他任意空白处两处右键菜单自动消失)
+  // 全局彻底屏蔽浏览器默认 Chromium 右键菜单，并实现点击任意空白处取消应用菜单 (解决 Bug 2)
   useEffect(() => {
-    const closeAllContextMenus = () => {
+    const handleGlobalContextMenu = (e: MouseEvent) => {
+      // 在最外层捕获阶段彻底拦截 Chromium 默认右键菜单 (返回、重新加载、检查等)
+      e.preventDefault();
+    };
+    const handleGlobalClick = () => {
       setMessageContextMenu(null);
       setContextMenu(null);
     };
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        closeAllContextMenus();
+        setMessageContextMenu(null);
+        setContextMenu(null);
       }
     };
-    window.addEventListener("click", closeAllContextMenus);
-    window.addEventListener("contextmenu", closeAllContextMenus);
+    window.addEventListener("contextmenu", handleGlobalContextMenu, true); // capture = true
+    window.addEventListener("click", handleGlobalClick);
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => {
-      window.removeEventListener("click", closeAllContextMenus);
-      window.removeEventListener("contextmenu", closeAllContextMenus);
+      window.removeEventListener("contextmenu", handleGlobalContextMenu, true);
+      window.removeEventListener("click", handleGlobalClick);
       window.removeEventListener("keydown", handleGlobalKeyDown);
     };
   }, []);
@@ -1513,6 +1518,13 @@ export default function App() {
       return;
     }
 
+    // 解决 Bug 5 (会话重复条目)：如果当前是新会话，立即生成并绑定一个稳定的 Session ID！
+    let sid = currentSessionId;
+    if (!sid) {
+      sid = "s_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+      setCurrentSessionId(sid);
+    }
+
     const userImages = attachments.filter(a => a.isMedia).map(a => a.dataUrl);
     const userFiles = attachments.filter(a => !a.isMedia).map(a => ({ name: a.name, url: a.dataUrl, sizeStr: a.sizeStr }));
 
@@ -1566,7 +1578,7 @@ export default function App() {
     const ownerProvider = providers.find(p => p.models.includes(actualModel)) || currentProvider;
 
     const config: any = {
-      session_id: currentSessionId || undefined,
+      session_id: sid,
       provider_id: ownerProvider.id,
       provider_url: ownerProvider.provider_url,
       api_key: ownerProvider.api_key,
@@ -1580,7 +1592,7 @@ export default function App() {
     try {
       const updatedHistory = await invoke<ChatMessage[]>("run_agent_turn", {
         config,
-        sessionId: currentSessionId,
+        sessionId: sid,
         messages: newHistory,
       });
       setMessages(updatedHistory);
@@ -1602,12 +1614,14 @@ export default function App() {
   const allAvailableModels = providers.flatMap(p => p.models || []);
   const activeProvider = providers.find(p => p.id === activeProviderId) || providers[0];
   const currentProvider = activeProvider;
+  // 会话列表双重唯一键去重过滤 (解决 Bug 5 列表出现重复项问题)
+  const dedupedSessions = Array.from(new Map(sessions.map(s => [s.id, s])).values());
   const filteredSessions = sessionSearch.trim()
-    ? sessions.filter(s =>
+    ? dedupedSessions.filter(s =>
         s.title.toLowerCase().includes(sessionSearch.toLowerCase()) ||
         (s.preview && s.preview.toLowerCase().includes(sessionSearch.toLowerCase()))
       )
-    : sessions;
+    : dedupedSessions;
   const pinnedSessions = filteredSessions.filter(s => pinnedSessionIds.includes(s.id));
   const unpinnedSessions = filteredSessions.filter(s => !pinnedSessionIds.includes(s.id));
   const sessionGroups = groupSessionsByDate(unpinnedSessions);
@@ -2541,8 +2555,15 @@ export default function App() {
                 onPaste={handlePaste}
                 onChange={e => {
                   setInput(e.target.value);
-                  e.target.style.height = "auto";
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
+                  const el = e.target;
+                  if (!el.value) {
+                    el.style.height = "24px";
+                  } else {
+                    const nextH = Math.min(Math.max(24, el.scrollHeight), 160);
+                    if (Math.abs(el.clientHeight - nextH) > 2) {
+                      el.style.height = `${nextH}px`;
+                    }
+                  }
                 }}
                 onKeyDown={e => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -2551,7 +2572,7 @@ export default function App() {
                   }
                 }}
                 placeholder={ROTATING_PLACEHOLDERS[placeholderIndex]}
-                className="flex-1 bg-transparent border-none text-[15px] text-black dark:text-white placeholder-[#8E8E93] focus:outline-none resize-none max-h-40 py-1"
+                className="flex-1 bg-transparent border-none text-[14.5px] leading-relaxed text-black dark:text-white placeholder-[#8E8E93] focus:outline-none resize-none min-h-[24px] max-h-40 py-1 font-sans"
               />
 
               {/* 1:1 对标原版发送 / 停止生成按钮 */}
@@ -3080,15 +3101,30 @@ export default function App() {
                 <button onClick={() => setSettingsView("root")} className="text-black dark:text-white">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
-                <h2 className="text-lg font-bold text-black dark:text-white">技能扩展 (Skills)</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-bold text-black dark:text-white">技能扩展 (Skills)</h2>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#FF2D55]/10 text-[#FF2D55] font-semibold">
+                    已加载 {skills.length} 个
+                  </span>
+                </div>
               </div>
-              <button
-                onClick={() => invoke("open_external_url", { url: "https://github.com/OpenMinis/MinisSkills" })}
-                className="text-xs text-[#0A84FF] flex items-center gap-1 hover:underline"
-              >
-                <span>浏览 MinisSkills 官方库</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => loadSkills()}
+                  className="px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 text-xs text-black dark:text-white flex items-center gap-1.5 transition font-medium"
+                  title="重新扫描 WSL 沙箱 /var/minis/skills 目录"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-[#0A84FF]" />
+                  <span>同步沙箱技能</span>
+                </button>
+                <button
+                  onClick={() => invoke("open_external_url", { url: "https://github.com/OpenMinis/MinisSkills" })}
+                  className="text-xs text-[#0A84FF] flex items-center gap-1 hover:underline"
+                >
+                  <span>浏览官方库</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
