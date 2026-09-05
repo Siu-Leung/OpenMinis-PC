@@ -616,26 +616,53 @@ async fn pick_folder() -> Result<Option<String>, String> {
     }
 }
 
+/// 快速 URL 百分号解码 (解决中文/空格/emoji 导致的路径无法在 WSL 找到问题)
+fn url_decode_string(input: &str) -> String {
+    let mut bytes = Vec::new();
+    let mut chars = input.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                if let Ok(hex_byte) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
+                    bytes.push(hex_byte);
+                    continue;
+                }
+            }
+        }
+        bytes.push(b);
+    }
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+#[tauri::command]
+fn get_default_minis_dir() -> String {
+    mounts::detect_or_create_default_minis_dir().to_string_lossy().to_string()
+}
+
 #[tauri::command]
 async fn read_image_data_url(path_or_url: String) -> Result<String, String> {
     if path_or_url.starts_with("data:image/") {
         return Ok(path_or_url);
     }
+    // 解码 URL 编码路径
+    let decoded_path = url_decode_string(&path_or_url);
     let minis_home = sandbox::SandboxManager::get_minis_home();
-    let clean = path_or_url
+    let clean = decoded_path
         .trim_start_matches("minis://")
         .trim_start_matches("/var/minis/")
         .trim_start_matches('\\')
         .trim_start_matches('/');
 
     let resolved_path = if clean.starts_with("attachments") {
-        minis_home.join(clean)
+        minis_home.join(&clean)
     } else if clean.starts_with("workspace") {
-        minis_home.join(clean)
+        minis_home.join(&clean)
     } else if clean.starts_with("shared") {
-        minis_home.join(clean)
+        minis_home.join(&clean)
     } else {
-        let p = std::path::PathBuf::from(&path_or_url);
+        let p = std::path::PathBuf::from(&decoded_path);
         if p.exists() {
             p
         } else {
@@ -1078,6 +1105,7 @@ fn main() {
             add_mounted_folder,
             remove_mounted_folder,
             pick_folder,
+            get_default_minis_dir,
             read_image_data_url,
             // Native Offloads
             send_native_notification,

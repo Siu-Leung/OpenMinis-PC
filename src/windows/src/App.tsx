@@ -4,7 +4,6 @@ import { ModelGroupManager, ModelGroupItem, FullModelGroupsState, DefaultsConfig
 import { LogsManager } from "./components/LogsManager";
 import { BackupRestoreManager } from "./components/BackupRestoreManager";
 import { UnifiedModelPicker } from "./components/UnifiedModelPicker";
-import { MinisComputer, MinisComputerState } from "./components/MinisComputer";
 import { FloatingToolBar, ToolStepStatus } from "./components/FloatingToolBar";
 import { MarkdownImage } from "./components/MarkdownImage";
 import { invoke } from "@tauri-apps/api/core";
@@ -23,6 +22,9 @@ import {
   ChevronRight,
   Zap,
   ArrowUp,
+  ArrowUpToLine,
+  FolderPlus,
+  MessageSquare,
   Settings as SettingsIcon,
   Search,
   Trash2,
@@ -554,16 +556,19 @@ export default function App() {
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState<string>("");
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
-  // Minis Computer 实时画中画小电脑状态
-  const [computerState, setComputerState] = useState<MinisComputerState>({
-    isActive: false,
-    toolType: "other",
-    title: "",
-    commandOrUrl: "",
-  });
+
+  // Minis Computer 详情模态框当前选中的步骤
+  const [activeLiveModalStep, setActiveLiveModalStep] = useState<ToolStepStatus | null>(null);
+
+  // 默认非系统盘主工作存储盘 (如 D:\Minis)
+  const [defaultMinisHostDir, setDefaultMinisHostDir] = useState<string>("");
 
   // 工具执行步骤状态 (对标原版 FloatingToolBar 的 toolBlocks)
   const [toolSteps, setToolSteps] = useState<ToolStepStatus[]>([]);
+
+  // 智能贴底与滚动位置
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // 小电脑交互回调
   const handleComputerTakeover = (url: string) => {
@@ -575,15 +580,6 @@ export default function App() {
       setCurrentNavUrl(u);
     }
     setShowBrowserWindow(true);
-  };
-  const handleComputerExpand = () => {
-    // 放大：打开浏览器窗口(若是浏览器)或展开完整终端视图
-    if (computerState.toolType === "browser" && computerState.commandOrUrl) {
-      handleComputerTakeover(computerState.commandOrUrl);
-    }
-  };
-  const handleComputerClose = () => {
-    setComputerState(prev => ({ ...prev, isActive: false, outputSnippet: undefined, previewImageUrl: undefined }));
   };
 
   // 工具步骤折叠状态 (Turn 级)
@@ -969,9 +965,29 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
+  // 监听容器滚动，计算是否处于底部
+  const handleMessageScroll = () => {
+    if (!scrollContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    const atBottom = scrollHeight - scrollTop - clientHeight < 60;
+    setIsAtBottom(atBottom);
+  };
+
+  // 智能贴底：仅在用户处于底部时随新内容滚动，离开底部时绝不抢夺滚轮
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (isAtBottom && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    }
   }, [messages, streamingText, streamingThinking, attachments, activeToolName]);
+
+  // 跳至上一轮用户提问 (Turn Walk)
+  const handleJumpToPrevTurn = () => {
+    const userNodes = document.querySelectorAll("[data-turn-role='user']");
+    if (userNodes.length > 0) {
+      const target = userNodes[userNodes.length - 1];
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
 
   useEffect(() => {
     if (agentStatus === "thinking") {
@@ -1016,7 +1032,6 @@ export default function App() {
           clearTypingBuffer();
           setLoading(false);
           setAgentStatus("idle");
-          setComputerState(prev => ({ ...prev, isActive: false }));
           setToolSteps([]);
         }
       } else if (event_type === "thinking") {
@@ -1024,18 +1039,8 @@ export default function App() {
         setStreamingThinking(prev => prev + content);
       } else if (event_type === "token") {
         setAgentStatus("answering");
-        // 写入打字机缓冲, 由 effect 匀速吐出 (对标原版节流策略)
-        typingBufferRef.current += content;
-        if (!typingTimerRef.current) {
-          typingTimerRef.current = setInterval(() => {
-            if (typingBufferRef.current.length > 0) {
-              // 每次吐出最多 4 个字符 (可含中文), 保证流畅可见的打字效果
-              const chunk = typingBufferRef.current.slice(0, 4);
-              typingBufferRef.current = typingBufferRef.current.slice(4);
-              setStreamingText(prev => prev + chunk);
-            }
-          }, 30);
-        }
+        // 原生流畅流式追加，消除人工延时打字机导致的流式中断或突兀弹出
+        setStreamingText(prev => prev + content);
       } else if (event_type === "tool_start") {
         // 新版事件: content = { tool, args }, 旧版兼容: content = "正在调用: xxx"
         let toolName = "";
@@ -1069,77 +1074,36 @@ export default function App() {
           toolType: stepType,
           commandOrUrl,
         }]);
-        // 驱动 Minis Computer 画中画小电脑 (真实 URL/命令)
-        if (toolName === "browser_use") {
-          setComputerState({
-            isActive: true,
-            toolType: "browser",
-            title: realUrl || "浏览网页",
-            commandOrUrl: realUrl || "https://www.baidu.com",
-            outputSnippet: undefined,
-            previewImageUrl: undefined,
-          });
-        } else if (toolName === "shell_execute") {
-          setComputerState({
-            isActive: true,
-            toolType: "shell",
-            title: "执行命令",
-            commandOrUrl: realCmd || "minis",
-          });
-        } else if (toolName === "file_read" || toolName === "file_write" || toolName === "file_edit") {
-          setComputerState({
-            isActive: true,
-            toolType: "file",
-            title: "文件操作",
-            commandOrUrl: toolArgs?.path || toolName,
-          });
-        } else {
-          setComputerState({
-            isActive: true,
-            toolType: "other",
-            title: toolName,
-            commandOrUrl: toolName,
-          });
-        }
       } else if (event_type === "tool_end") {
         setActiveToolName(null);
-        // 新版事件: content = { tool, output } -> 小电脑展示真实输出/截图预览
+        // 新版事件: content = { tool, output } -> 提取真实输出与截图路径
+        let parsedOutput: string | undefined;
+        let previewImg: string | undefined;
+        let succeeded = true;
         try {
           const parsed = JSON.parse(content);
-          if (parsed.output !== undefined) {
-            setComputerState(prev => {
-              const next: any = { ...prev, outputSnippet: parsed.output };
-              // 截图路径 (minis://attachments/xxx.png) -> 小电脑浏览器视图实时预览
-              const imgMatch = String(parsed.output).match(/minis:\/\/attachments\/([\w\-\.]+\.(png|jpg|jpeg|gif|webp))/i);
-              if (imgMatch) {
-                next.previewImageUrl = `minis://attachments/${imgMatch[1]}`;
-              } else if (prev.toolType === "browser") {
-                next.previewImageUrl = undefined;
-              }
-              return next;
-            });
+          parsedOutput = typeof parsed.output === "string" ? parsed.output : undefined;
+          succeeded = parsed.success !== false;
+          if (parsedOutput) {
+            const imgMatch = parsedOutput.match(/minis:\/\/attachments\/([\w\-\.%]+\.(png|jpg|jpeg|gif|webp))/i);
+            if (imgMatch) {
+              previewImg = `minis://attachments/${imgMatch[1]}`;
+            }
           }
         } catch (_) {
-          /* 旧版纯文本, 忽略 */
+          parsedOutput = content || undefined;
         }
-        // 按后端真实结果更新最后一个运行中的步骤。
+
+        // 按后端真实结果更新最后一个运行中的步骤
         setToolSteps(prev => {
           const next = [...prev];
-          let parsedOutput: string | undefined;
-          let succeeded = true;
-          try {
-            const parsed = JSON.parse(content);
-            parsedOutput = typeof parsed.output === "string" ? parsed.output : undefined;
-            succeeded = parsed.success !== false;
-          } catch (_) {
-            parsedOutput = content || undefined;
-          }
           for (let i = next.length - 1; i >= 0; i--) {
             if (next[i].status === "running") {
               next[i] = {
                 ...next[i],
                 status: succeeded ? "success" : "failed",
                 outputSnippet: parsedOutput,
+                previewImageUrl: previewImg || next[i].previewImageUrl,
               };
               break;
             }
@@ -1248,6 +1212,8 @@ export default function App() {
     try {
       const res = await invoke<MountedFolderItem[]>("list_mounted_folders");
       setMountedFolders(res || []);
+      const defaultDir = await invoke<string>("get_default_minis_dir");
+      if (defaultDir) setDefaultMinisHostDir(defaultDir);
     } catch (e) {}
   };
 
@@ -1487,15 +1453,6 @@ export default function App() {
         { role: "assistant", content: `❌ 交互故障: ${err}` }
       ]);
     } finally {
-      // 打字机缓冲收尾: 先把剩余全部吐出, 再停定时器
-      if (typingTimerRef.current) {
-        clearInterval(typingTimerRef.current);
-        typingTimerRef.current = null;
-      }
-      if (typingBufferRef.current.length > 0) {
-        setStreamingText(prev => prev + typingBufferRef.current);
-        typingBufferRef.current = "";
-      }
       setLoading(false);
       setStreamingText("");
       setStreamingThinking("");
@@ -1598,8 +1555,12 @@ export default function App() {
                                 : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
                             }`}
                           >
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text} text-xs font-bold`}>
-                              {s.title ? s.title.slice(0, 1).toUpperCase() : "M"}
+                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition ${
+                              isSelected
+                                ? "bg-[#0A84FF] text-white shadow-sm"
+                                : "bg-black/5 dark:bg-white/5 text-[#8E8E93] group-hover:text-black dark:group-hover:text-white"
+                            }`}>
+                              <MessageSquare className="w-3.5 h-3.5" />
                             </div>
 
                             <div className="flex-1 min-w-0 pr-1">
@@ -1675,8 +1636,12 @@ export default function App() {
                                 : "hover:bg-[#F2F2F7] dark:hover:bg-[#18181A]"
                             }`}
                           >
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${colorConfig.bg} ${colorConfig.text} text-xs font-bold`}>
-                              {s.title ? s.title.slice(0, 1).toUpperCase() : "M"}
+                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition ${
+                              isSelected
+                                ? "bg-[#0A84FF] text-white shadow-sm"
+                                : "bg-black/5 dark:bg-white/5 text-[#8E8E93] group-hover:text-black dark:group-hover:text-white"
+                            }`}>
+                              <MessageSquare className="w-3.5 h-3.5" />
                             </div>
 
                             <div className="flex-1 min-w-0 pr-1">
@@ -1973,7 +1938,7 @@ export default function App() {
         )}
 
         {/* 消息滚动流 */}
-        <div className="flex-1 overflow-y-auto px-4 py-6">
+        <div ref={scrollContainerRef} onScroll={handleMessageScroll} className="flex-1 overflow-y-auto px-4 py-6 relative">
           <div className="max-w-3xl mx-auto space-y-6">
             {(() => {
             const turns = aggregateMessagesIntoTurns(messages);
@@ -1981,7 +1946,7 @@ export default function App() {
             return turns.map((turn, turnIdx) => {
               if (turn.role === "user") {
                 return (
-                  <div key={turn.id} onContextMenu={e => handleMessageContextMenu(e, turnIdx, turn)} className="flex flex-col items-end space-y-2 group select-text">
+                  <div key={turn.id} data-turn-role="user" onContextMenu={e => handleMessageContextMenu(e, turnIdx, turn)} className="flex flex-col items-end space-y-2 group select-text">
                     {turn.images && turn.images.length > 0 && (
                       <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
                         {turn.images.map((img, idx) => (
@@ -1990,7 +1955,7 @@ export default function App() {
                       </div>
                     )}
 
-                    <div className="bg-[#1E787880] dark:bg-[#2F3A5C] text-[#000000] dark:text-[#FFFFFF] rounded-[22px] rounded-br-[6px] px-4 py-2.5 max-w-[80%] text-[15px] leading-relaxed shadow-sm">
+                    <div className="bg-[#0A84FF] text-white dark:bg-[#2F3A5C] dark:text-[#FFFFFF] rounded-[20px] rounded-br-[4px] px-4 py-2.5 max-w-[80%] text-[15px] leading-relaxed shadow-sm">
                       {turn.content}
                     </div>
                   </div>
@@ -2003,6 +1968,20 @@ export default function App() {
 
               return (
                 <div key={turn.id} onContextMenu={e => handleMessageContextMenu(e, turnIdx, turn)} className="flex flex-col space-y-2 text-[#000000] dark:text-[#E4E4E7] select-text">
+                  {/* 1:1 原版 Minis 身份行 (Soul Avatar + Name + Model 胶囊) */}
+                  <div className="flex items-center gap-2 mb-1 select-none">
+                    <div className="w-5 h-5 rounded-full bg-gradient-to-tr from-[#0A84FF] to-[#30B0C7] flex items-center justify-center shadow-sm">
+                      <Sparkles className="w-3 h-3 text-white" />
+                    </div>
+                    <span className="text-xs font-bold text-black dark:text-white tracking-tight">
+                      Minis
+                    </span>
+                    <span className="text-[10px] text-[#8E8E93]">·</span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/10 text-[#8E8E93]">
+                      {activeModel || "Minis Engine"}
+                    </span>
+                  </div>
+
                   {/* 1. 深度思考折叠条 */}
                   {turn.thinking && (
                     <div className="mb-1 max-w-2xl select-none">
@@ -2019,7 +1998,7 @@ export default function App() {
                       </div>
 
                       {isExpandedThink && (
-                        <div className="mt-1 pl-3 py-1 border-l-2 border-[#0A84FF]/40 text-xs text-[#8E8E93] whitespace-pre-wrap leading-relaxed font-sans bg-[#F2F2F7]/50 dark:bg-[#1C1C1E]/30 rounded-r-xl p-2.5">
+                        <div className="mt-1 pl-3 py-1 border-l-2 border-[#0A84FF]/60 text-xs text-[#8E8E93] whitespace-pre-wrap leading-relaxed font-mono bg-[#F2F2F7]/50 dark:bg-[#1C1C1E]/30 rounded-r-xl p-2.5">
                           {turn.thinking}
                         </div>
                       )}
@@ -2155,8 +2134,30 @@ export default function App() {
                 )}
 
                 {streamingText && (
-                  <div className="text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5] whitespace-pre-wrap break-words">
-                    {streamingText}
+                  <div className="prose dark:prose-invert max-w-none text-[15px] leading-relaxed text-[#1C1C1E] dark:text-[#F4F4F5]">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        code({ inline, className, children, ...props }: any) {
+                          const match = /language-(\w+)/.exec(className || "");
+                          const codeText = String(children).replace(/\n$/, "");
+                          if (!inline && match) {
+                            return <CodeBlock language={match[1]} code={codeText} />;
+                          }
+                          return (
+                            <code className="bg-[#F2F2F7] dark:bg-[#34343A] px-1.5 py-0.5 rounded text-[13px] font-mono text-[#FF9500] dark:text-[#FF9F0A]" {...props}>
+                              {children}
+                            </code>
+                          );
+                        },
+                        img({ src, alt, ...props }: any) {
+                          return <MarkdownImage src={src} alt={alt} {...props} />;
+                        }
+                      }}
+                    >
+                      {streamingText}
+                    </ReactMarkdown>
                   </div>
                 )}
 
@@ -2170,17 +2171,75 @@ export default function App() {
             )}
 
             <div ref={messagesEndRef} />
+
+            {/* 智能贴底状态下的右下角浮动双按钮 (1:1 原版 AIChatView.swift) */}
+            {!isAtBottom && (
+              <div className="fixed bottom-28 right-8 flex flex-col gap-2 z-30 animate-in fade-in slide-in-from-bottom-2 duration-150 select-none">
+                <button
+                  onClick={handleJumpToPrevTurn}
+                  className="w-8 h-8 rounded-full bg-white dark:bg-[#1C1C1E] border border-black/10 dark:border-white/15 shadow-xl text-[#8E8E93] hover:text-black dark:hover:text-white flex items-center justify-center transition hover:scale-105"
+                  title="跳至上一轮提问 (Turn Walk)"
+                >
+                  <ArrowUpToLine className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    scrollContainerRef.current?.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior: "smooth" });
+                    setIsAtBottom(true);
+                  }}
+                  className="w-8 h-8 rounded-full bg-white dark:bg-[#1C1C1E] border border-black/10 dark:border-white/15 shadow-xl text-[#8E8E93] hover:text-black dark:hover:text-white flex items-center justify-center transition hover:scale-105"
+                  title="回到底部"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
         {/* =========================================================================
             输入栏 (1:1 ChatInputBar：停止按键 + 思考强度快捷切换 + 旋转占位符)
         ========================================================================= */}
-        <div className="p-4 bg-gradient-to-t from-white via-white/80 to-transparent dark:from-[#000000] dark:via-[#000000]/80 dark:to-transparent shrink-0">
-          {/* 浮动工具状态栏 (对标原版 FloatingToolBar) */}
-          <FloatingToolBar steps={toolSteps} onOpenDetail={(step) => {
-            if (step.toolType === "browser" && step.commandOrUrl) handleComputerTakeover(step.commandOrUrl);
-          }} />
+        <div className="p-4 bg-gradient-to-t from-white via-white/80 to-transparent dark:from-[#000000] dark:via-[#000000]/80 dark:to-transparent shrink-0 relative">
+          {/* 浮动工具状态栏 (1:1 方案 A：微型监视器 + 状态胶囊) */}
+          <FloatingToolBar
+            steps={toolSteps}
+            onOpenDetail={(step) => setActiveLiveModalStep(step)}
+            onTakeover={handleComputerTakeover}
+          />
+
+          {/* 斜杠快捷指令补全浮窗 (1:1 原版 Slash Commands) */}
+          {input.startsWith("/") && !input.includes(" ") && (
+            <div className="max-w-3xl mx-auto mb-2 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl border border-black/10 dark:border-white/10 rounded-2xl shadow-2xl p-1.5 z-40 text-xs animate-in fade-in slide-in-from-bottom-2 duration-150">
+              <div className="px-2.5 py-1 text-[10px] font-bold text-[#8E8E93] uppercase">快捷指令</div>
+              {[
+                { cmd: "/compact", label: "压缩上下文 (Compact)", desc: "精简历史轮次，生成上下文摘要卡片", icon: Layers },
+                { cmd: "/reset", label: "清空会话 (Reset)", desc: "清空当前消息，开始新对话", icon: Trash2 },
+                { cmd: "/terminal", label: "独立终端 (Terminal)", desc: "唤起 Alpine Linux 沙箱交互命令行", icon: Terminal },
+                { cmd: "/browser", label: "内置浏览器 (Browser)", desc: "打开内嵌交互式网页浏览器", icon: Globe },
+              ].map(sc => (
+                <button
+                  key={sc.cmd}
+                  type="button"
+                  onClick={() => {
+                    if (sc.cmd === "/compact") handleCompactMessages();
+                    else if (sc.cmd === "/reset") { setMessages([]); setInput(""); }
+                    else if (sc.cmd === "/terminal") invoke("launch_interactive_terminal", { cmd: null });
+                    else if (sc.cmd === "/browser") setShowBrowserWindow(true);
+                    setInput("");
+                  }}
+                  className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-2.5 transition text-black dark:text-white"
+                >
+                  <sc.icon className="w-3.5 h-3.5 text-[#0A84FF]" />
+                  <div>
+                    <div className="font-semibold text-xs">{sc.cmd}</div>
+                    <div className="text-[10px] text-[#8E8E93]">{sc.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="max-w-3xl mx-auto bg-white dark:bg-[#1C1C1E] border border-[#E5E5EA] dark:border-[#2C2C2E] rounded-[26px] px-4 py-2.5 flex flex-col gap-2 focus-within:border-[#0A84FF] transition shadow-xl">
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pt-1 border-b border-[#E5E5EA] dark:border-[#2C2C2E] pb-2">
@@ -2247,25 +2306,30 @@ export default function App() {
                 <Plus className="w-5 h-5" />
               </button>
 
-              {/* 思考强度快捷切换 Pill */}
-              <button
-                type="button"
-                onClick={() => {
-                  const levels = ["off", "low", "medium", "high"];
-                  const next = levels[(levels.indexOf(thinkingLevel) + 1) % levels.length];
-                  setThinkingLevel(next);
-                  localStorage.setItem("openminis_thinking_level", next);
-                }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition select-none shrink-0 mb-0.5 ${
-                  thinkingLevel !== "off"
-                    ? "bg-[#0A84FF]/10 text-[#0A84FF] border-[#0A84FF]/30 dark:bg-[#0A84FF]/20"
-                    : "bg-transparent text-[#8E8E93] border-transparent hover:border-[#E5E5EA] dark:hover:border-[#2C2C2E]"
-                }`}
-                title="点击快速切换思考模式强度"
-              >
-                <Brain className="w-3.5 h-3.5" />
-                <span>{thinkingLevel === "off" ? "思考: 关" : `思考: ${thinkingLevel.toUpperCase()}`}</span>
-              </button>
+              {/* 思考强度 5 段式微型滑块 (1:1 原版 Thinking Level Segment) */}
+              <div className="flex items-center bg-black/5 dark:bg-white/10 p-0.5 rounded-full text-[10px] font-mono select-none shrink-0 mb-0.5">
+                {["off", "low", "med", "high", "max"].map(lvl => {
+                  const active = thinkingLevel === lvl;
+                  return (
+                    <button
+                      key={lvl}
+                      type="button"
+                      onClick={() => {
+                        setThinkingLevel(lvl);
+                        localStorage.setItem("openminis_thinking_level", lvl);
+                      }}
+                      className={`px-1.5 py-0.5 rounded-full uppercase transition-all ${
+                        active
+                          ? "bg-[#0A84FF] text-white font-bold shadow-sm"
+                          : "text-[#8E8E93] hover:text-black dark:hover:text-white"
+                      }`}
+                      title={`思考强度: ${lvl}`}
+                    >
+                      {lvl}
+                    </button>
+                  );
+                })}
+              </div>
 
               <textarea
                 ref={textareaRef}
@@ -2874,6 +2938,31 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+              {/* 默认非系统盘 Minis 专属主存储目录 (用户核心要求) */}
+              <div className="p-4 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-[#34C759]/15 text-[#34C759] flex items-center justify-center shrink-0">
+                    <HardDrive className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-xs text-black dark:text-white flex items-center gap-2">
+                      <span>主工作存储盘 (非系统盘根目录 Minis)</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#34C759]/15 text-[#34C759]">自动优先</span>
+                    </div>
+                    <div className="text-[11px] font-mono text-[#8E8E93] mt-0.5">
+                      宿主: {defaultMinisHostDir || "D:\\Minis"} ➔ 沙箱: /var/minis/mounts/Minis
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => invoke("open_sandbox_dir", { subpath: "mounts/Minis" })}
+                  className="px-3 py-1.5 rounded-xl bg-[#F2F2F7] dark:bg-white/10 hover:bg-[#E5E5EA] dark:hover:bg-white/15 text-xs text-black dark:text-white transition font-medium shrink-0"
+                >
+                  打开目录
+                </button>
+              </div>
+
               <div className="p-3.5 bg-white dark:bg-[#242426] rounded-2xl border border-[#E5E5EA] dark:border-[#2C2C2E] space-y-2.5">
                 <div className="font-semibold text-sm text-black dark:text-white">添加新挂载 (Windows → 沙箱)</div>
                 <div className="space-y-2">
@@ -2961,12 +3050,17 @@ export default function App() {
       )}
 
       {/* =========================================================================
-          工具调用详情全屏抽屉模态框 (ToolLiveModal)
+          工具调用详情全屏抽屉模态框 (Minis Computer 控制台)
       ========================================================================= */}
-      {selectedToolDetail && (
+      {(selectedToolDetail || activeLiveModalStep) && (
         <ToolLiveModal
+          step={activeLiveModalStep}
           toolInfo={selectedToolDetail}
-          onClose={() => setSelectedToolDetail(null)}
+          onClose={() => {
+            setSelectedToolDetail(null);
+            setActiveLiveModalStep(null);
+          }}
+          onTakeover={handleComputerTakeover}
         />
       )}
 
@@ -3506,7 +3600,7 @@ export default function App() {
                   <Sparkles className="w-10 h-10" />
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-black dark:text-white pt-2">Minis</h1>
-                <div className="text-xs text-[#8E8E93] font-mono">版本 {formatDisplayVersion(appVersion)} (Windows 测试版)</div>
+                <div className="text-xs text-[#8E8E93] font-mono">版本 {formatDisplayVersion(appVersion)} (OpenMinis Windows 体验版)</div>
                 <p className="text-xs text-[#8E8E93] max-w-xs leading-relaxed pt-1">
                   Minis 是完全本地、完全私密的设备端 Agent。
                 </p>
@@ -3610,7 +3704,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[#8E8E93] px-3 mt-2">
-                  当前版本：{formatDisplayVersion(appVersion)} (Windows 测试版)
+                  当前版本：{formatDisplayVersion(appVersion)} (OpenMinis Windows 体验版)
                 </div>
               </div>
             </div>
@@ -3806,7 +3900,11 @@ export default function App() {
               </button>
               <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
               <button
-                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                onClick={() => {
+                  if (confirm("确定要截断删除此消息及后续所有问答吗？此操作不可撤销。")) {
+                    handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn);
+                  }
+                }}
                 className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -3845,9 +3943,23 @@ export default function App() {
                 <RotateCcw className="w-3.5 h-3.5 text-[#FF9F0A]" />
                 <span>从此处重新执行</span>
               </button>
+              <button
+                onClick={() => {
+                  setMessageContextMenu(null);
+                  handleCompactMessages();
+                }}
+                className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E] transition flex items-center gap-2 text-black dark:text-white font-medium"
+              >
+                <Layers className="w-3.5 h-3.5 text-[#FF9500]" />
+                <span>压缩此条以上上下文</span>
+              </button>
               <div className="my-1 border-t border-[#E5E5EA] dark:border-[#2C2C2E]" />
               <button
-                onClick={() => handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn)}
+                onClick={() => {
+                  if (confirm("确定要截断删除此消息及后续所有问答吗？此操作不可撤销。")) {
+                    handleDeleteFromTurn(messageContextMenu.turnIndex, messageContextMenu.turn);
+                  }
+                }}
                 className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-[#FF453A]/10 transition flex items-center gap-2 text-[#FF453A] font-medium"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -3914,14 +4026,6 @@ export default function App() {
           <span className="font-semibold">{sandboxRestartToast}</span>
         </div>
       )}
-
-      {/* Minis Computer 实时画中画小电脑 (左下角) */}
-      <MinisComputer
-        computerState={computerState}
-        onTakeover={handleComputerTakeover}
-        onExpand={handleComputerExpand}
-        onClose={handleComputerClose}
-      />
     </div>
   );
 }
