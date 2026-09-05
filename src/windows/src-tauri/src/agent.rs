@@ -644,16 +644,41 @@ impl AgentEngine {
 
                     let result = self.dispatcher.dispatch(fn_name, fn_args.clone()).await;
 
-                    // 提取结果片段给前端小电脑展示 (截断防超长)
+                    // Send a concise human-readable result to the live UI while
+                    // keeping the complete structured result in chat history.
                     let result_str = result.to_string();
-                    let snippet = if result_str.len() > 800 {
-                        format!("{}...", &result_str[..800])
+                    let explicit_success = result.get("success").and_then(Value::as_bool);
+                    let exit_failed = result
+                        .get("exit_code")
+                        .and_then(Value::as_i64)
+                        .map(|code| code != 0)
+                        .unwrap_or(false);
+                    let has_error = match result.get("error") {
+                        Some(Value::Null) | None => false,
+                        Some(Value::String(message)) => !message.trim().is_empty(),
+                        Some(_) => true,
+                    };
+                    let failed = explicit_success == Some(false)
+                        || exit_failed
+                        || (explicit_success.is_none() && has_error);
+                    let display_keys: &[&str] = if failed {
+                        &["error", "stderr", "data", "stdout", "message"]
                     } else {
-                        result_str.clone()
+                        &["data", "stdout", "message", "stderr", "error"]
+                    };
+                    let display_result = display_keys
+                        .iter()
+                        .filter_map(|key| result.get(*key).and_then(Value::as_str))
+                        .find(|value| !value.trim().is_empty())
+                        .unwrap_or(&result_str);
+                    let snippet = if display_result.chars().count() > 800 {
+                        format!("{}...", display_result.chars().take(800).collect::<String>())
+                    } else {
+                        display_result.to_string()
                     };
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_end".to_string(),
-                        content: json!({ "tool": fn_name, "output": snippet }).to_string(),
+                        content: json!({ "tool": fn_name, "output": snippet, "success": !failed }).to_string(),
                     });
 
                     history.push(ChatMessage {
@@ -953,8 +978,8 @@ fn extract_llm_error(err_text: &str) -> String {
 
     // 非 JSON: 截断原始文本, 避免超长错误刷屏
     let trimmed = err_text.trim();
-    if trimmed.len() > 300 {
-        format!("{}...", &trimmed[..300])
+    if trimmed.chars().count() > 300 {
+        format!("{}...", trimmed.chars().take(300).collect::<String>())
     } else if trimmed.is_empty() {
         "未知错误".to_string()
     } else {

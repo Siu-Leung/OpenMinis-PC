@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: '是否自动创建 GitHub Release 发布安装包'
+        description: '是否创建 GitHub Release 发布安装包'
         required: false
         type: boolean
         default: false
@@ -14,14 +14,19 @@ on:
       - '.github/workflows/build-windows.yml'
     branches:
       - main
+    tags:
+      - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-windows:
     name: Build OpenMinis for Windows
     runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      release_version: ${{ steps.version.outputs.release_version }}
 
     steps:
       - name: Checkout repository
@@ -32,7 +37,34 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-          cache-dependency-path: 'src/windows/package.json'
+          cache-dependency-path: 'src/windows/package-lock.json'
+
+      - name: Resolve and validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./src/windows/package.json').version")"
+          package_lock_version="$(node -p "require('./src/windows/package-lock.json').version")"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src/windows/src-tauri/Cargo.toml | head -n 1)"
+          cargo_lock_version="$(awk '/name = "openminis-windows"/ { found=1; next } found && /^version = / { gsub(/version = |"/, ""); print; exit }' src/windows/src-tauri/Cargo.lock)"
+          tauri_version="$(node -p "require('./src/windows/src-tauri/tauri.conf.json').version")"
+          if [[ "$package_version" != "$package_lock_version" || "$package_version" != "$cargo_version" || "$package_version" != "$cargo_lock_version" || "$package_version" != "$tauri_version" ]]; then
+            echo "Version mismatch: package=$package_version package-lock=$package_lock_version cargo=$cargo_version cargo-lock=$cargo_lock_version tauri=$tauri_version"
+            exit 1
+          fi
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid package version: $package_version"
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "$package_version"
+          version="${major}.${minor}.0.${patch}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version v${version}"
+            exit 1
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "release_version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -45,26 +77,29 @@ jobs:
           workspaces: 'src/windows/src-tauri -> target'
 
       - name: Install Frontend Dependencies
-        run: |
-          cd src/windows
-          npm install
+        working-directory: src/windows
+        run: npm ci
 
       - name: Build Windows Binary & Installer (Tauri v2)
-        run: |
-          cd src/windows
-          npm run tauri build
+        working-directory: src/windows
+        run: npm run tauri build
 
       - name: Prepare Artifacts
         shell: bash
         run: |
-          mkdir -p dist-artifacts
-          # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
-          find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
-          find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.19 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.19_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.19_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.19.exe 2>/dev/null || true
+          set -euo pipefail
+          mkdir -p dist-artifacts raw-artifacts
+          find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} raw-artifacts/ \;
+          setup_file="$(find raw-artifacts -maxdepth 1 -type f -name '*-setup.exe' | head -n 1)"
+          msi_file="$(find raw-artifacts -maxdepth 1 -type f -name '*.msi' | head -n 1)"
+          portable_file="src/windows/src-tauri/target/release/openminis-windows.exe"
+          test -n "$setup_file"
+          test -n "$msi_file"
+          test -f "$portable_file"
+          cp "$setup_file" "dist-artifacts/OpenMinis_${RELEASE_VERSION}_x64-setup.exe"
+          cp "$msi_file" "dist-artifacts/OpenMinis_${RELEASE_VERSION}_x64_en-US.msi"
+          cp "$portable_file" "dist-artifacts/openminis-windows-v${RELEASE_VERSION}.exe"
+          test "$(find dist-artifacts -maxdepth 1 -type f | wc -l)" -eq 3
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -72,21 +107,33 @@ jobs:
         with:
           name: OpenMinis-Windows-Installer
           path: dist-artifacts/*
+          if-no-files-found: error
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.19
+  release-windows:
+    name: Publish OpenMinis Windows Release
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.release) || startsWith(github.ref, 'refs/tags/v') }}
+    needs: build-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download Windows Installers
+        uses: actions/download-artifact@v4
+        with:
+          name: OpenMinis-Windows-Installer
+          path: dist-artifacts
+
+      - name: Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.19 (Windows 测试版)
-          tag_name: v1.13.0.19
-          body: |
-            ### 📦 OpenMinis for Windows v1.13.0.19 (浏览器小电视对齐 + 版本统一)
-            > **⚠️ 备注：Windows 测试版 (Experimental)**
-            
-            - **浏览器小电视对齐**：`browser_use` 的文本结果不再只等截图，小电脑在浏览器模式下可直接显示 `outputSnippet`
-            - **版本号统一递增**：package.json / Cargo.toml / tauri.conf.json 升级到 `1.13.19`，对外发布与安装包命名升级为 `v1.13.0.19`
-            - **保留截图预览**：若工具输出包含 `minis://attachments/*.png` 仍展示实时预览
-            - **保留前序修复**：截图落地重写、工具参数清洗、右键打断重试、打字机流式等已在前序版本稳定
+          name: OpenMinis Windows v${{ needs.build-windows.outputs.release_version }} (Windows 测试版)
+          tag_name: v${{ needs.build-windows.outputs.release_version }}
+          generate_release_notes: true
           files: dist-artifacts/*
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -943,7 +943,7 @@ export default function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateUrl, setUpdateUrl] = useState("");
-  const [appVersion, setAppVersion] = useState("1.13.19");
+  const [appVersion, setAppVersion] = useState("1.13.20");
 
   // 动态旋转占位符
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
@@ -1050,18 +1050,26 @@ export default function App() {
           toolName = content.replace("正在调用: ", "");
         }
         setActiveToolName(toolName);
-        // 维护 FloatingToolBar 工具步骤
+        // 维护 FloatingToolBar 工具步骤，并保留可供查看/接管的真实目标。
         const stepType = inferToolType(toolName);
+        const realUrl = toolArgs?.url || "";
+        const realCmd = toolArgs?.command || toolArgs?.cmd || "";
+        const commandOrUrl = stepType === "browser"
+          ? realUrl
+          : stepType === "shell"
+            ? realCmd
+            : stepType === "file"
+              ? toolArgs?.path || ""
+              : "";
         setToolSteps(prev => [...prev, {
           id: `${toolName}-${Date.now()}`,
           toolName,
           title: toolDisplayTitle(toolName),
           status: "running",
           toolType: stepType,
+          commandOrUrl,
         }]);
         // 驱动 Minis Computer 画中画小电脑 (真实 URL/命令)
-        const realUrl = toolArgs?.url || "";
-        const realCmd = toolArgs?.command || toolArgs?.cmd || "";
         if (toolName === "browser_use") {
           setComputerState({
             isActive: true,
@@ -1114,12 +1122,25 @@ export default function App() {
         } catch (_) {
           /* 旧版纯文本, 忽略 */
         }
-        // 标记最后一个 running step 为 success
+        // 按后端真实结果更新最后一个运行中的步骤。
         setToolSteps(prev => {
           const next = [...prev];
+          let parsedOutput: string | undefined;
+          let succeeded = true;
+          try {
+            const parsed = JSON.parse(content);
+            parsedOutput = typeof parsed.output === "string" ? parsed.output : undefined;
+            succeeded = parsed.success !== false;
+          } catch (_) {
+            parsedOutput = content || undefined;
+          }
           for (let i = next.length - 1; i >= 0; i--) {
             if (next[i].status === "running") {
-              next[i] = { ...next[i], status: "success" };
+              next[i] = {
+                ...next[i],
+                status: succeeded ? "success" : "failed",
+                outputSnippet: parsedOutput,
+              };
               break;
             }
           }
