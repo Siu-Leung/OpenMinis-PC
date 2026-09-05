@@ -122,30 +122,28 @@ print(text[:10000])
 
             "screenshot" => {
                 // 真实调用 Edge 生成网页像素级截图 (外层套 25 秒硬超时)
+                // 落地策略: Edge 只能可靠写 Windows 本地路径 (UNC 到 WSL 会静默失败)
+                //   1) Edge 截图 -> 宿主临时目录 (LOCALAPPDATA/Temp)
+                //   2) 成功后读字节 -> 直写沙箱 /var/minis/attachments (UNC 路径写字节)
+                //   3) 沙箱内 cp 到宿主 .openminis/attachments (供 read_image_data_url 兜底)
                 let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
                 let filename = format!("screenshot_{}.png", timestamp);
 
-                // 沙箱内目录 (Agent 可 ls 到)
-                let _ = self.sandbox.execute_shell("mkdir -p /var/minis/attachments", 5).await;
-
-                // 宿主机副本目录 (供 read_image_data_url 优先读取)
                 let minis_home = crate::sandbox::SandboxManager::get_minis_home();
                 let att_dir = minis_home.join("attachments");
                 let _ = std::fs::create_dir_all(&att_dir);
                 let host_copy_path = att_dir.join(&filename);
 
-                // 沙箱 UNC 路径: \\wsl$\OpenMinisSandbox\var\minis\attachments\xxx.png
-                let distro_name = &self.sandbox.distro_name;
-                let target_shot_str = format!(
-                    r"\\wsl$\{}\var\minis\attachments\{}",
-                    distro_name, filename
-                );
+                // 宿主临时目录 (Windows 本地路径, Edge 可可靠写入)
+                let host_tmp = std::env::var("TEMP").unwrap_or_else(|_| r"C:\Users\Administrator\AppData\Local\Temp".to_string());
+                let host_tmp_path = std::path::PathBuf::from(&host_tmp).join(&format!("openminis_{}", filename));
+                let host_tmp_str = host_tmp_path.to_string_lossy().to_string();
 
                 let mut edge_shot_cmd = Command::new(edge_path);
                 edge_shot_cmd.args([
                     "--headless=new",
                     "--disable-gpu",
-                    &format!("--screenshot={}", target_shot_str),
+                    &format!("--screenshot={}", host_tmp_str),
                     "--window-size=1280,800",
                     "--timeout=15000",
                     &target_url,
@@ -157,7 +155,20 @@ print(text[:10000])
 
                 match edge_shot {
                     Ok(Ok(out)) if out.status.success() => {
-                        // 复制一份到宿主机副本 (供前端 read_image_data_url 兜底)
+                        // 1) 读宿主临时文件字节
+                        let bytes = std::fs::read(&host_tmp_path).unwrap_or_default();
+                        let _ = std::fs::remove_file(&host_tmp_path);
+                        if bytes.is_empty() {
+                            return BrowserActionResult {
+                                success: false,
+                                data: None,
+                                error: Some("Edge 截图文件为空".to_string()),
+                            };
+                        }
+                        // 2) 直写沙箱 /var/minis/attachments
+                        let sandbox_path = format!("/var/minis/attachments/{}", filename);
+                        let _ = self.sandbox.write_sandbox_bytes(&sandbox_path, &bytes, false).await;
+                        // 3) 沙箱内 cp 到宿主 .openminis/attachments (沙箱无 /mnt 挂载时此步跳过, 兜底在 read_image_data_url 的 WSL 读取)
                         let copy_cmd = format!(
                             "cp '/var/minis/attachments/{}' '{}' 2>/dev/null || true",
                             filename, host_copy_path.to_string_lossy()
@@ -170,27 +181,26 @@ print(text[:10000])
                         }
                     }
                     _ => {
-                        // 降级回退生成合法图片
-                        let fallback_cmd = format!(
-                            "python3 -c \"
-with open('{path}', 'wb') as f:
-    f.write(b'\\x89PNG\
-\\n\\x1a\\n\\x00\\x00\\x00\
-IHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01\\x08\\x06\\x00\\x00\\x00\\x1f\\x15c4\\x00\\x00\\x00\\nIDATx\\x9cc\\x00\\x01\\x00\\x00\\x05\\x00\\x01\
-\\n-\\xb4\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82')
-\"",
-                            path = target_shot_str
-                        );
-                        let _ = self.sandbox.execute_shell(&fallback_cmd, 10).await;
+                        // 降级: 生成合法 1x1 PNG 占位 (直接写字节, 不再用沙箱 python 写反斜杠非法路径)
+                        let placeholder: [u8; 68] = [
+                            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+                            b'I', b'H', b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+                            0x0D, b'I', b'D', b'A', b'T', 0x08, 0xD7, 0x63, 0x60, 0x60, 0x00, 0x00,
+                            0x00, 0x04, 0x00, 0x01, 0x9C, 0xCD, 0xCD, 0x70, 0x00, 0x00, 0x00, 0x00,
+                            0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+                        ];
+                        let sandbox_path = format!("/var/minis/attachments/{}", filename);
+                        let _ = self.sandbox.write_sandbox_bytes(&sandbox_path, &placeholder, false).await;
+                        let _ = std::fs::write(&host_copy_path, &placeholder);
                         BrowserActionResult {
                             success: true,
                             data: Some(format!("minis://attachments/{}", filename)),
-                            error: None,
+                            error: Some("Edge 截图失败, 已生成占位图".to_string()),
                         }
                     }
                 }
             }
-
             unknown => BrowserActionResult {
                 success: false,
                 data: None,

@@ -25,6 +25,7 @@ Personality & Guidelines:
 Linux Sandbox Rules & Directories:
 - Your commands execute inside an isolated Alpine Linux environment via BusyBox ash.
 - CRITICAL: This is a PURE LINUX sandbox. It has NO Windows binaries. Do NOT try to run `powershell.exe`, `cmd.exe`, `explorer.exe`, `rundll32.exe`, or any other Windows command inside the shell — they do not exist here (Windows interop is disabled) and will always fail.
+- CRITICAL: Never wrap URLs or paths in `@url:` backtick notation (e.g. `@url:\`https://...\``). That is a chat-context annotation, NOT valid shell or tool-argument syntax. Always pass plain URLs like https://example.com and plain paths like /var/minis/workspace/a.py. Backticks inside shell commands are command substitution and will break your command.
 - To interact with the Windows HOST (open a file, launch a browser window, write the clipboard, send a notification), use the dedicated tools: `win_open`, `clipboard_write`, `system_notification` — never a Windows command via shell_execute.
 - Available directories:
   /var/minis/workspace/   — Working files (scripts, data, text).
@@ -631,6 +632,9 @@ impl AgentEngine {
 
                     let fn_args: Value = serde_json::from_str(fn_args_str).unwrap_or(json!({}));
 
+                    // 参数清洗: 剥掉模型误带的 @url:`...` / `...` 包装 (Hermes 上下文标注混入工具参数)
+                    let fn_args = sanitize_tool_args(fn_args);
+
                     // 携带工具参数 JSON, 前端据此驱动 Minis Computer 画中画小电脑 (真实 URL/命令)
                     let _ = app.emit("agent-stream", StreamEvent {
                         event_type: "tool_start".to_string(),
@@ -955,5 +959,48 @@ fn extract_llm_error(err_text: &str) -> String {
         "未知错误".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+/// 清洗工具参数: 剥掉模型误带入的 `@url:\`...\`` / 反引号包装
+/// (Hermes 上下文注入的 URL 标注被模型误抄进 shell 命令与工具参数)
+fn sanitize_tool_args(args: Value) -> Value {
+    fn clean_str(s: &str) -> String {
+        let mut out = s.trim().to_string();
+        // 剥掉 @url: 前缀 (无论大小写)
+        if let Some(idx) = out.find("url:") {
+            let prefix_end = idx + 4;
+            let before = &out[..idx];
+            // 只在 @url: 前缀时剥离 (避免误伤正文中的 "url:")
+            if before.trim_end().ends_with('@') {
+                out = out[prefix_end..].trim_start().to_string();
+            }
+        }
+        // 剥掉外层反引号
+        if out.starts_with('`') && out.ends_with('`') && out.len() >= 2 {
+            out = out[1..out.len() - 1].to_string();
+        }
+        // 再剥一次可能残留的 @url: (双重包装)
+        if let Some(idx) = out.find("url:") {
+            let before = &out[..idx];
+            if before.trim_end().ends_with('@') {
+                out = out[idx + 4..].trim_start().to_string();
+            }
+        }
+        if out.starts_with('`') && out.ends_with('`') && out.len() >= 2 {
+            out = out[1..out.len() - 1].to_string();
+        }
+        out
+    }
+
+    match args {
+        Value::String(s) => Value::String(clean_str(&s)),
+        Value::Array(arr) => Value::Array(arr.into_iter().map(sanitize_tool_args).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, sanitize_tool_args(v)))
+                .collect(),
+        ),
+        other => other,
     }
 }
