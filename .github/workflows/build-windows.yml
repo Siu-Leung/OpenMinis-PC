@@ -61,10 +61,10 @@ jobs:
           # 收集 nsis exe 安装包、msi 安装包与独立二进制文件
           find src/windows/src-tauri/target/release/bundle/ -type f \( -name "*.exe" -o -name "*.msi" \) -exec cp {} dist-artifacts/ \;
           find src/windows/src-tauri/target/release/ -maxdepth 1 -type f -name "openminis-windows.exe" -exec cp {} dist-artifacts/ \;
-          # 为安装包统一建立 1.13.0.17 后缀别名文件
-          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.17_x64-setup.exe; done
-          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.17_x64_en-US.msi; done
-          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.17.exe 2>/dev/null || true
+          # 为安装包统一建立 1.13.0.18 后缀别名文件
+          for f in dist-artifacts/*setup.exe; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.18_x64-setup.exe; done
+          for f in dist-artifacts/*.msi; do [ -f "$f" ] && cp "$f" dist-artifacts/OpenMinis_1.13.0.18_x64_en-US.msi; done
+          cp dist-artifacts/openminis-windows.exe dist-artifacts/openminis-windows-v1.13.0.18.exe 2>/dev/null || true
           ls -lh dist-artifacts/
 
       - name: Upload Windows Installers (Artifact)
@@ -74,18 +74,18 @@ jobs:
           path: dist-artifacts/*
           retention-days: 14
 
-      - name: Update GitHub Release v1.13.0.17
+      - name: Update GitHub Release v1.13.0.18
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenMinis Windows v1.13.0.17 (Windows 测试版)
-          tag_name: v1.13.0.17
+          name: OpenMinis Windows v1.13.0.18 (Windows 测试版)
+          tag_name: v1.13.0.18
           body: |
-            ### 📦 OpenMinis for Windows v1.13.0.17 (截图落地重写 + 工具参数清洗)
+            ### 📦 OpenMinis for Windows v1.13.0.18 (版本号格式统一 + 动态显示)
             > **⚠️ 备注：Windows 测试版 (Experimental)**
             
-            - **截图发不出图片彻底重写**：Edge 截图先写 Windows 本地临时文件（UNC 到 WSL 会静默失败，旧版所有截图丢失的根因），再读字节直写沙箱 /var/minis/attachments + 宿主 .openminis/attachments 副本；失败时降级为合法 1x1 PNG 占位图（不再用反斜杠非法路径）
-            - **工具参数自动清洗**：剥掉模型误带入的 `@url:\`...\`` 包装与反引号（模型把上下文标注抄进 shell 命令导致 curl/python 失败的根因），system prompt 同步加禁令
-            - **右键打断重试修复** + **小电脑真实内容预览** + **打字机流式**（v1.13.0.16 内容）
+            - **修复版本号格式分裂**：Cargo.toml/package.json 从三段 `1.13.17` 统一为四段 `1.13.0.17`（与 tauri.conf.json / CI / release tag 一致），修复前端显示 `1.13.15` / `1.13.015` 等不一致问题
+            - **版本号动态显示**：「关于」面板当前版本不再硬编码，改为运行时从 `get_app_version`（tauri.conf.json package_info）读取真实版本
+            - **截图落地重写** + **工具参数清洗** + **右键打断重试** + **小电脑真实预览** + **打字机流式**（v1.13.0.16/17 内容）
           files: dist-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
